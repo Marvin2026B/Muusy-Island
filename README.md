@@ -1,5 +1,9 @@
 # Muusy Island
 
+<p align="center">
+  <img src="assets/muusy-island-logo.png" alt="Muusy Island logo" width="720">
+</p>
+
 Muusy Island is a system-wide Windows 11 music controller with a compact glass interface. It can control YouTube Music, Spotify, and VLC without keeping the browser in the foreground.
 
 ## Features

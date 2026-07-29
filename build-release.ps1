@@ -36,6 +36,7 @@ if ($parseErrors.Count -gt 0) {
 }
 
 $releaseEntries = @(
+    'assets',
     'Chrome Bridge',
     'Opera Bridge',
     'Entpackte Browser-Erweiterung',
