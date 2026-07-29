@@ -39,7 +39,6 @@ $releaseEntries = @(
     'Chrome Bridge',
     'Opera Bridge',
     'Entpackte Browser-Erweiterung',
-    'AI_PROJECT_CONTEXT.md',
     'build-release.ps1',
     'CHANGELOG.md',
     'dynamic_island.ps1',
