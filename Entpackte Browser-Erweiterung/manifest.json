@@ -1,0 +1,25 @@
+{
+  "manifest_version": 3,
+  "name": "Muusy Island Bridge (Opera GX)",
+  "version": "1.5.0",
+  "description": "Lokale Bridge zwischen YouTube Music in Opera GX und der Windows Dynamic Island.",
+  "permissions": ["storage"],
+  "host_permissions": [
+    "https://music.youtube.com/*",
+    "http://127.0.0.1:8765/*",
+    "http://localhost:8765/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://music.youtube.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_title": "Muusy Island"
+  }
+}

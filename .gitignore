@@ -1,0 +1,16 @@
+# User-local configuration
+island-settings.json
+
+# Release output
+release/
+*.zip
+*.sha256
+SHA256SUMS.txt
+
+# Temporary and editor files
+*.log
+*.tmp
+Thumbs.db
+.DS_Store
+__pycache__/
+*.py[cod]

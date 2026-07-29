@@ -1,0 +1,46 @@
+name: Validate
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: windows-2025
+    steps:
+      # actions/checkout v5.1.0
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
+
+      - name: Validate JavaScript
+        shell: pwsh
+        run: |
+          Get-ChildItem -Recurse -Filter *.js | ForEach-Object {
+            node --check $_.FullName
+            if ($LASTEXITCODE -ne 0) { throw "JavaScript validation failed: $($_.FullName)" }
+          }
+
+      - name: Build release archive
+        shell: pwsh
+        run: |
+          ./build-release.ps1 -Version 1.5.0 -OutputDirectory "$env:RUNNER_TEMP\release"
+
+      - name: Check for committed local settings
+        shell: pwsh
+        run: |
+          if (Test-Path -LiteralPath ./island-settings.json) {
+            throw "island-settings.json must never be committed"
+          }
+          $personalPaths = Get-ChildItem -Recurse -File |
+            Where-Object { $_.Extension -in '.ps1', '.js', '.json', '.md', '.bat', '.cs' } |
+            Select-String -Pattern 'C:\Users\' -SimpleMatch
+          if ($personalPaths) {
+            throw "Absolute user path found in repository"
+          }

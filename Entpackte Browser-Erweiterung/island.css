@@ -1,0 +1,27 @@
+#ym-dynamic-island { position: fixed; z-index: 2147483647; top: 14px; left: 50%; transform: translateX(-50%); color: #f5f7fb; font-family: Inter, ui-sans-serif, system-ui, sans-serif; user-select: none; }
+#ym-dynamic-island * { box-sizing: border-box; }
+#ym-dynamic-island .ymdi-shell { width: 300px; overflow: hidden; border: 1px solid rgba(255,255,255,.12); border-radius: 26px; background: rgba(11,13,18,.93); box-shadow: 0 15px 45px rgba(0,0,0,.45), 0 0 0 1px rgba(0,0,0,.25); backdrop-filter: blur(22px); transition: width .25s cubic-bezier(.2,.8,.2,1), border-radius .25s ease; }
+#ym-dynamic-island.is-expanded .ymdi-shell { width: 356px; border-radius: 24px; }
+#ym-dynamic-island button { border: 0; color: inherit; cursor: pointer; background: transparent; font: inherit; }
+#ym-dynamic-island .ymdi-compact { height: 58px; display: flex; align-items: center; gap: 10px; padding: 7px 8px 7px 9px; }
+#ym-dynamic-island .ymdi-cover { width: 44px; height: 44px; flex: 0 0 auto; border-radius: 13px; background: #252936 center/cover no-repeat; box-shadow: inset 0 0 0 1px rgba(255,255,255,.1); }
+#ym-dynamic-island .ymdi-copy { min-width: 0; flex: 1; display: grid; gap: 3px; }
+#ym-dynamic-island .ymdi-copy strong, #ym-dynamic-island .ymdi-copy span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#ym-dynamic-island .ymdi-copy strong { font-size: 12px; font-weight: 650; }
+#ym-dynamic-island .ymdi-copy span { color: #9da3b3; font-size: 11px; }
+#ym-dynamic-island .ymdi-play { width: 30px; height: 30px; border-radius: 50%; background: #fff; color: #0b0d12; font-size: 12px; }
+#ym-dynamic-island .ymdi-expand { width: 25px; color: #9da3b3; font-size: 19px; transition: transform .2s ease; }
+#ym-dynamic-island.is-expanded .ymdi-expand { transform: rotate(180deg); }
+#ym-dynamic-island .ymdi-details { display: none; padding: 0 18px 16px; }
+#ym-dynamic-island.is-expanded .ymdi-details { display: block; animation: ymdi-in .22s ease both; }
+#ym-dynamic-island .ymdi-progress { height: 3px; overflow: hidden; border-radius: 3px; background: #323640; }
+#ym-dynamic-island .ymdi-progress-fill { display: block; height: 100%; width: 0; border-radius: inherit; background: #f24a78; transition: width .2s linear; }
+#ym-dynamic-island .ymdi-times { display: flex; justify-content: space-between; margin-top: 5px; color: #858b9a; font-size: 9px; }
+#ym-dynamic-island .ymdi-controls { display: flex; justify-content: center; align-items: center; gap: 26px; margin-top: 7px; }
+#ym-dynamic-island .ymdi-controls button { color: #d8dbe4; font-size: 20px; }
+#ym-dynamic-island .ymdi-controls .ymdi-big-play { display: grid; place-items: center; width: 37px; height: 37px; border-radius: 50%; color: #0b0d12; background: #fff; font-size: 14px; }
+#ym-dynamic-island .ymdi-hint { margin-top: 10px; color: #6f7585; text-align: center; font-size: 9px; letter-spacing: .02em; }
+#ym-dynamic-island .ymdi-hint span { padding: 0 4px; color: #f24a78; }
+#ym-dynamic-island.ymdi-bump .ymdi-cover { animation: ymdi-bump .4s ease; }
+@keyframes ymdi-in { from { opacity: 0; transform: translateY(-5px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes ymdi-bump { 0%,100% { transform: scale(1); } 50% { transform: scale(1.06); } }
