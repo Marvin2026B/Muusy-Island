@@ -59,7 +59,7 @@ The bridge is only required for YouTube Music. Spotify and VLC use Windows media
 3. Select **Load unpacked**.
 4. Choose the `Entpackte Browser-Erweiterung` folder from the extracted release.
 
-Open YouTube Music after loading the bridge. After an update, click **Reload** on the bridge and refresh the YouTube Music tab.
+Open YouTube Music after loading the bridge. The bridge reconnects to existing YouTube Music tabs automatically after startup or an extension reload; a manual tab refresh is only needed if the browser blocks the first injection.
 
 ## Controls
 

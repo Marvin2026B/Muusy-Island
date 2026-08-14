@@ -2,6 +2,34 @@
 
 const BRIDGE = "http://127.0.0.1:8765";
 const BRIDGE_VERSION = "1.5";
+const YOUTUBE_MUSIC_TABS = { url: ["https://music.youtube.com/*"] };
+
+async function reconnectYouTubeMusicTabs() {
+  const tabs = await chrome.tabs.query(YOUTUBE_MUSIC_TABS);
+  await Promise.all(tabs.map((tab) => {
+    if (!tab.id) return Promise.resolve();
+    return chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      files: ["content.js"]
+    }).catch(() => null);
+  }));
+}
+
+function scheduleReconnect() {
+  chrome.alarms.create("muusy-reconnect", { periodInMinutes: 0.5 });
+  reconnectYouTubeMusicTabs().catch(() => null);
+}
+
+chrome.runtime.onInstalled.addListener(scheduleReconnect);
+chrome.runtime.onStartup.addListener(scheduleReconnect);
+chrome.alarms.onAlarm.addListener((alarm) => {
+  if (alarm.name === "muusy-reconnect") reconnectYouTubeMusicTabs().catch(() => null);
+});
+chrome.tabs.onUpdated.addListener((_tabId, changeInfo, tab) => {
+  if (changeInfo.status === "complete" && tab.url?.startsWith("https://music.youtube.com/")) {
+    reconnectYouTubeMusicTabs().catch(() => null);
+  }
+});
 
 async function bridgeFetch(path, options = {}) {
   const controller = new AbortController();

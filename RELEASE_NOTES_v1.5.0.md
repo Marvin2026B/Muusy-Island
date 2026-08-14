@@ -14,6 +14,7 @@ Mediensteuerung, Queue, App-Schnellzugriff und Browser-Bridge.
 - Globale Hotkeys, Lautstärke per Mausrad, Profile und optionaler Autostart
 - Cleanes Drag-to-close: Island nach unten auf das eingeblendete X ziehen
 - Einfache Installation mit `Install-MuusyIsland.bat`, Startmenü- und Desktop-Verknüpfung
+- Automatische Wiederverbindung der Browser-Bridge bei bestehendem YouTube-Music-Tab
 
 ## Sicherheitsänderung
 
