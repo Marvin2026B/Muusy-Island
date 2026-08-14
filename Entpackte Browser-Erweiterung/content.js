@@ -1,6 +1,9 @@
 (function () {
   "use strict";
 
+  if (window.__MUUSY_ISLAND_BRIDGE_LOADED__) return;
+  window.__MUUSY_ISLAND_BRIDGE_LOADED__ = true;
+
   let lastCommand = 0;
   let lastStateJson = "";
   let lastPublishAt = 0;

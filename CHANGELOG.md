@@ -7,6 +7,7 @@ All notable changes to Muusy Island are documented here.
 ### Added
 
 - Separate unpacked bridges for Google Chrome, Opera, and Opera GX.
+- Browser bridge reconnects automatically after reloads, startup, and existing-tab recovery.
 - Per-user installer with Start Menu and Desktop shortcuts.
 - Native Windows media-session detection for Chrome and regular Opera.
 - Three focused settings views for appearance, playback, and app shortcuts.
