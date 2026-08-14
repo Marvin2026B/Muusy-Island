@@ -51,13 +51,22 @@ New-Item -ItemType Directory -Path $startMenuRoot -Force | Out-Null
 
 $shell = New-Object -ComObject WScript.Shell
 $shortcutPath = Join-Path $startMenuRoot 'Muusy Island.lnk'
-$shortcut = $shell.CreateShortcut($shortcutPath)
-$shortcut.TargetPath = $powershellPath
-$shortcut.Arguments = $startArguments
-$shortcut.WorkingDirectory = $installRoot
-$shortcut.Description = 'Start Muusy Island'
-$shortcut.IconLocation = "$env:SystemRoot\System32\shell32.dll,44"
-$shortcut.Save()
+$desktopShortcutPath = Join-Path ([Environment]::GetFolderPath('Desktop')) 'Muusy Island.lnk'
+
+function New-MuusyIslandShortcut {
+    param([string]$Path)
+
+    $shortcut = $shell.CreateShortcut($Path)
+    $shortcut.TargetPath = $powershellPath
+    $shortcut.Arguments = $startArguments
+    $shortcut.WorkingDirectory = $installRoot
+    $shortcut.Description = 'Start Muusy Island'
+    $shortcut.IconLocation = "$env:SystemRoot\System32\shell32.dll,44"
+    $shortcut.Save()
+}
+
+New-MuusyIslandShortcut -Path $shortcutPath
+New-MuusyIslandShortcut -Path $desktopShortcutPath
 
 if (-not $NoStart) {
     Start-Process -FilePath $powershellPath -ArgumentList $startArguments -WorkingDirectory $installRoot -WindowStyle Hidden
@@ -65,6 +74,7 @@ if (-not $NoStart) {
 
 Write-Host "Muusy Island installed to: $installRoot"
 Write-Host "Start Menu shortcut: $shortcutPath"
+Write-Host "Desktop shortcut: $desktopShortcutPath"
 if (-not $NoStart) {
     Write-Host 'Muusy Island has been started.'
 }
