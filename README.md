@@ -28,9 +28,9 @@ Muusy Island is a system-wide Windows 11 music controller with a compact glass i
 1. Download the latest `Muusy-Island-v1.5.0.zip` from the GitHub Releases page.
 2. Extract the ZIP to a temporary folder.
 3. Double-click `Install-MuusyIsland.bat`.
-4. The installer copies Muusy Island to `%LOCALAPPDATA%\Muusy Island`, creates a Start Menu shortcut, and starts the app.
+4. The installer copies Muusy Island to `%LOCALAPPDATA%\Muusy Island`, creates Start Menu and Desktop shortcuts, and starts the app.
 
-After installation, start it from the Windows Start Menu by searching for **Muusy Island**. The extracted release folder can be deleted after installation.
+After installation, start it from the Desktop shortcut or from the Windows Start Menu by searching for **Muusy Island**. The extracted release folder can be deleted after installation.
 
 The installer is per-user and does not require administrator access. It keeps the local settings file out of the release archive and does not overwrite it during updates.
 

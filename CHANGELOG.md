@@ -7,7 +7,7 @@ All notable changes to Muusy Island are documented here.
 ### Added
 
 - Separate unpacked bridges for Google Chrome, Opera, and Opera GX.
-- Per-user installer with Start Menu shortcut and a dedicated Muusy Island launcher.
+- Per-user installer with Start Menu and Desktop shortcuts.
 - Native Windows media-session detection for Chrome and regular Opera.
 - Three focused settings views for appearance, playback, and app shortcuts.
 - Borderless compact waveform with frame-rate-independent smoothing.
