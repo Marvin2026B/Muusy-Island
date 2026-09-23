@@ -4,18 +4,19 @@
   <img src="assets/muusy-island-logo.png" alt="Muusy Island logo" width="720">
 </p>
 
-Muusy Island is a system-wide Windows 11 music controller with a compact glass interface. It can control YouTube Music, Spotify, and VLC without keeping the browser in the foreground.
+Muusy Island is a Windows 11 music controller for YouTube Music, Spotify, and VLC. YouTube Music connects through a browser extension; Spotify and VLC use Windows media sessions.
 
 ## Features
 
 - YouTube Music support for Google Chrome, Opera, and Opera GX
 - Windows media-session support for Spotify and VLC
-- Play/pause, previous, next, volume, queue preview, and ratings
+- Discord Rich Presence with the current source and track
+- Play/pause, previous, next, volume, queue preview, and YouTube Music ratings
 - Global hotkeys and mouse-wheel volume control
 - App shortcuts that focus an existing app or start it when needed
 - Profiles for position and size, optional autostart, and drag-to-close
 - Per-user installation with no administrator rights
-- No account, cloud service, telemetry, or API key required
+- No Muusy Island account, cloud service, or telemetry
 
 ## Requirements
 
@@ -57,7 +58,7 @@ The bridge is only required for YouTube Music. Spotify and VLC use Windows media
 1. Open `opera://extensions`.
 2. Enable **Developer mode**.
 3. Select **Load unpacked**.
-4. Choose the `Entpackte Browser-Erweiterung` folder from the extracted release.
+4. Choose the `Opera GX Bridge` folder from the extracted release.
 
 Open YouTube Music after loading the bridge. The bridge reconnects to existing YouTube Music tabs automatically after startup or an extension reload; a manual tab refresh is only needed if the browser blocks the first injection.
 
@@ -81,7 +82,7 @@ Discord displays the active source name (for example, YouTube Music or Spotify),
 - `Ctrl+Alt+I`: expand or collapse the Island
 - Drag the Island down onto the X target to close it
 
-The settings button in the expanded Island opens the configuration. Settings are grouped into appearance, playback, and app shortcuts.
+The settings button opens the configuration for appearance, playback, hotkeys, and app shortcuts.
 
 ## Local data and security
 

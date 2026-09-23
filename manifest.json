@@ -10,12 +10,12 @@
     "http://localhost:8765/*"
   ],
   "background": {
-    "service_worker": "Entpackte Browser-Erweiterung/background.js"
+    "service_worker": "Opera GX Bridge/background.js"
   },
   "content_scripts": [
     {
       "matches": ["https://music.youtube.com/*"],
-      "js": ["Entpackte Browser-Erweiterung/content.js"],
+      "js": ["Opera GX Bridge/content.js"],
       "run_at": "document_idle"
     }
   ],

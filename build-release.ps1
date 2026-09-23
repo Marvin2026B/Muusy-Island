@@ -10,7 +10,7 @@ $manifestPaths = @(
     'manifest.json',
     'Chrome Bridge\manifest.json',
     'Opera Bridge\manifest.json',
-    'Entpackte Browser-Erweiterung\manifest.json'
+    'Opera GX Bridge\manifest.json'
 )
 
 foreach ($relativePath in $manifestPaths) {
@@ -39,7 +39,7 @@ $releaseEntries = @(
     'assets',
     'Chrome Bridge',
     'Opera Bridge',
-    'Entpackte Browser-Erweiterung',
+    'Opera GX Bridge',
     'build-release.ps1',
     'CHANGELOG.md',
     'DiscordPresenceClient.cs',
@@ -51,7 +51,7 @@ $releaseEntries = @(
     'NativeMediaThumbnail.cs',
     'NativeMediaThumbnail.dll',
     'README.md',
-    "RELEASE_AUDIT_v$Version.md",
+    "RELEASE_CHECKS_v$Version.md",
     "RELEASE_NOTES_v$Version.md",
     'SECURITY.md',
     'start-dynamic-island.bat',

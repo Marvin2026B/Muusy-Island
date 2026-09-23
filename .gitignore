@@ -1,16 +1,26 @@
-# User-local configuration
+# Local user settings
 island-settings.json
 
-# Release output
+# Generated release files
 release/
 *.zip
 *.sha256
 SHA256SUMS.txt
 
-# Temporary and editor files
+# Local secrets and editor state
+.env
+.env.*
+!.env.example
+.vs/
+*.user
+*.suo
+
+# Temporary and operating-system files
 *.log
 *.tmp
+*.bak
 Thumbs.db
+Desktop.ini
 .DS_Store
 __pycache__/
 *.py[cod]
