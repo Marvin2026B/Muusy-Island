@@ -5,6 +5,9 @@
   window.__MUUSY_ISLAND_BRIDGE_LOADED__ = true;
 
   let lastCommand = 0;
+  const queuePage = [...crypto.getRandomValues(new Uint8Array(8))].map(value => value.toString(16).padStart(2, "0")).join("");
+  const queueTokens = new WeakMap();
+  let queueSequence = 0;
   let lastStateJson = "";
   let lastPublishAt = 0;
   let tickRunning = false;
@@ -16,6 +19,26 @@
 
   const clean = (value) => (value || "").replace(/\s+/g, " ").trim();
   const query = (selector, scope = document) => scope?.querySelector(selector) || null;
+  function queryDeep(selector, root = document) {
+    if (!root) return null;
+    const direct = root.querySelector?.(selector);
+    if (direct) return direct;
+    const nodes = root.querySelectorAll?.("*") || [];
+    for (const node of nodes) {
+      if (!node.shadowRoot) continue;
+      const match = queryDeep(selector, node.shadowRoot);
+      if (match) return match;
+    }
+    return null;
+  }
+  function allDeep(selector, root) {
+    if (!root) return [];
+    const found = [...(root.querySelectorAll?.(selector) || [])];
+    for (const node of root.querySelectorAll?.("*") || []) {
+      if (node.shadowRoot) found.push(...allDeep(selector, node.shadowRoot));
+    }
+    return found;
+  }
   const normalize = (value) =>
     clean(value).toLocaleLowerCase().replace(/[^\p{L}\p{N}]/gu, "");
 
@@ -76,16 +99,23 @@
   function getRatingControl(kind) {
     const player = getPlayer();
     if (!player) return null;
-    const rating = query("ytmusic-like-button-renderer", player) || player;
+    const rating = queryDeep("ytmusic-like-button-renderer", player) || player;
     const selectors = kind === "like"
-      ? ["#like-button", "#button-shape-like button", "[aria-label*='like' i]", "[aria-label*='mag ich' i]"]
-      : ["#dislike-button", "#button-shape-dislike button", "[aria-label*='dislike' i]", "[aria-label*='mag ich nicht' i]"];
+      ? ["#like-button", "#button-shape-like button"]
+      : ["#dislike-button", "#button-shape-dislike button"];
     for (const selector of selectors) {
-      const button = query(selector, rating);
+      const button = queryDeep(selector, rating);
       if (button) return button;
     }
-    const buttons = [...rating.querySelectorAll("button, tp-yt-paper-icon-button")];
-    return kind === "like" ? buttons[0] || null : buttons[1] || null;
+    const opposite = kind === "like" ? "dislike" : "like";
+    const labels = kind === "like"
+      ? [/^like(?:\s|$)/i, /^i like this/i, /^gefällt mir$/i, /^mag ich$/i]
+      : [/^dislike(?:\s|$)/i, /^i dislike this/i, /^gefällt mir nicht$/i, /^mag ich nicht$/i];
+    return allDeep("button, tp-yt-paper-icon-button", rating).find((button) => {
+      const label = `${button.getAttribute("aria-label") || ""} ${button.title || ""} ${button.getAttribute("data-tooltip-text") || ""}`.trim();
+      const normalized = label.toLocaleLowerCase();
+      return !button.disabled && !normalized.includes(opposite) && labels.some((pattern) => pattern.test(label));
+    }) || null;
   }
 
   function getControl(kind) {
@@ -150,7 +180,7 @@
       : null;
   }
 
-  function getQueue() {
+  function getQueueEntries() {
     const selector = [
       "ytmusic-player-queue ytmusic-player-queue-item",
       "ytmusic-player-queue ytmusic-playlist-panel-video-renderer",
@@ -163,18 +193,52 @@
       seen.add(row);
       return true;
     });
-    const parsed = rows.map(parseQueueRow).filter(Boolean);
+    const parsed = rows.map(row => {
+      const item = parseQueueRow(row);
+      if (!item) return null;
+      const identity = `${item.title}\n${item.artist}`;
+      let entry = queueTokens.get(row);
+      if (!entry || entry.identity !== identity) {
+        entry = { identity, token: `${queuePage}:${++queueSequence}` };
+        queueTokens.set(row, entry);
+      }
+      return { ...item, queueToken: entry.token, row };
+    }).filter(Boolean);
     if (!parsed.length) return [];
     const currentTitle = normalize(getTrack().title);
-    const currentIndex = parsed.findIndex((item) => normalize(item.title) === currentTitle);
+    let currentIndex = parsed.findIndex(item => item.row.hasAttribute("selected") || item.row.getAttribute("aria-selected") === "true");
+    if (currentIndex < 0) currentIndex = parsed.findIndex(item => normalize(item.title) === currentTitle);
     const candidates = currentIndex >= 0
       ? parsed.slice(currentIndex + 1)
       : parsed.filter((item) => normalize(item.title) !== currentTitle);
     return candidates.slice(0, 3);
   }
 
-  function executeCommand(action) {
-    getControl(action)?.click();
+  function getQueue() {
+    return getQueueEntries().map(({ row, ...item }) => item);
+  }
+
+  async function executeCommand(command) {
+    const action = command.action;
+    if (action === "queue") {
+      if (!/^[a-f0-9]{16}:[1-9][0-9]{0,8}$/.test(command.queueToken || "") ||
+          !Number.isFinite(command.expiresAt) || command.expiresAt <= Date.now()) return false;
+      const item = getQueueEntries().find(entry => entry.queueToken === command.queueToken);
+      if (!item || !item.row.isConnected) return false;
+      const control = query(".song-title, #video-title", item.row) || item.row;
+      control.click();
+      return true;
+    }
+    if (!["play", "prev", "next", "like", "dislike"].includes(action)) return false;
+    for (let attempt = 0; attempt < 8; attempt++) {
+      const control = getControl(action);
+      if (control && !control.disabled) {
+        control.click();
+        return true;
+      }
+      await new Promise((resolve) => window.setTimeout(resolve, 150));
+    }
+    return false;
   }
 
   function sendMessage(message) {
@@ -205,6 +269,7 @@
       current: times.current,
       duration: times.duration,
       queue: getQueue(),
+      queueSelection: true,
       liked: getRating(),
       sourceName: "YouTube Music",
       sourceKey: "youtube",
@@ -225,8 +290,10 @@
     const response = await sendMessage({ type: "YMDI_COMMANDS", after: lastCommand });
     const commands = Array.isArray(response?.commands) ? response.commands : [];
     for (const command of commands) {
+      const completed = await executeCommand(command);
+      // A removed/reused row must never play a different song or block subsequent controls.
+      if (!completed && command.action !== "queue") break;
       lastCommand = Math.max(lastCommand, Number(command.id) || 0);
-      executeCommand(command.action);
     }
     if (commands.length) window.setTimeout(() => publishState(true), 150);
   }

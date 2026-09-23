@@ -42,6 +42,7 @@ $releaseEntries = @(
     'Entpackte Browser-Erweiterung',
     'build-release.ps1',
     'CHANGELOG.md',
+    'DiscordPresenceClient.cs',
     'dynamic_island.ps1',
     'Install-MuusyIsland.bat',
     'Install-MuusyIsland.ps1',

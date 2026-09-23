@@ -2,6 +2,13 @@
 
 All notable changes to Muusy Island are documented here.
 
+## [Unreleased]
+
+### Added
+
+- Discord Rich Presence for currently playing media, with background IPC reconnects and a configurable Discord Application ID.
+- Use the active media source name in Discord activity labels.
+
 ## [1.5.0] - 2026-07-29
 
 ### Added

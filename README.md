@@ -61,6 +61,17 @@ The bridge is only required for YouTube Music. Spotify and VLC use Windows media
 
 Open YouTube Music after loading the bridge. The bridge reconnects to existing YouTube Music tabs automatically after startup or an extension reload; a manual tab refresh is only needed if the browser blocks the first injection.
 
+## Discord Rich Presence
+
+Muusy Island can publish the current title, artist, playback state, and progress to Discord as a `Listening` activity. Discord Desktop must be open. The presence connection runs on a background thread and reconnects when Discord starts or restarts. Track information is sent only to the local Discord client over its named pipe.
+
+1. Create an application at [Discord Developer Portal](https://discord.com/developers/applications).
+2. Copy its **Application ID** from **General Information**. The ID is public; do not use or share a client secret.
+3. In Muusy Island, open **Settings → Wiedergabe** and paste the ID into **Discord Application ID**.
+4. Save the settings and start playback.
+
+Discord displays the active source name (for example, YouTube Music or Spotify), the track title and artist, and a progress bar when duration data is available. The large image is the application's icon; per-track cover images are not sent to Discord.
+
 ## Controls
 
 - Mouse wheel over the Island: adjust system volume

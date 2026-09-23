@@ -7,6 +7,7 @@ Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase
 Add-Type -AssemblyName System.Web.Extensions
 Add-Type -AssemblyName System.Runtime.WindowsRuntime
 Add-Type -AssemblyName System.Drawing
+Add-Type -Path (Join-Path $PSScriptRoot "DiscordPresenceClient.cs") -ReferencedAssemblies System.Web.Extensions
 
 $nativeThumbnailAssembly = Join-Path $PSScriptRoot "NativeMediaThumbnail.dll"
 if (Test-Path -LiteralPath $nativeThumbnailAssembly) {
@@ -35,7 +36,7 @@ public static class IslandBridge
         new ConcurrentQueue<Dictionary<string, object>>();
     private static readonly JavaScriptSerializer Json = new JavaScriptSerializer();
     private static TcpListener listener;
-    private static int nextId;
+    private static long nextId = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
     private const int MaxRequestBodyBytes = 65536;
     private const int MaxHeaderBytes = 16384;
     private const int MaxHeaderCount = 64;
@@ -53,6 +54,7 @@ public static class IslandBridge
         state["current"] = 0.0;
         state["duration"] = 0.0;
         state["queue"] = new object[0];
+        state["queueSelection"] = false;
         state["liked"] = 0;
         state["sourceName"] = "YouTube Music";
         state["sourceKey"] = "youtube";
@@ -88,6 +90,21 @@ public static class IslandBridge
         Commands.Enqueue(command);
         Dictionary<string, object> ignored;
         while (Commands.Count > 20) Commands.TryDequeue(out ignored);
+    }
+
+    public static bool EnqueueQueue(string token)
+    {
+        if (token == null || !System.Text.RegularExpressions.Regex.IsMatch(token, @"\A[a-f0-9]{16}:[1-9][0-9]{0,8}\z"))
+            return false;
+        var command = new Dictionary<string, object>();
+        command["id"] = Interlocked.Increment(ref nextId);
+        command["action"] = "queue";
+        command["queueToken"] = token;
+        command["expiresAt"] = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() + 5000;
+        Commands.Enqueue(command);
+        Dictionary<string, object> ignored;
+        while (Commands.Count > 20) Commands.TryDequeue(out ignored);
+        return true;
     }
 
     private static bool IsAllowedExtensionOrigin(string origin)
@@ -330,14 +347,14 @@ public static class IslandBridge
             }
             else if (method == "GET" && path == "/commands")
             {
-                var after = 0;
+                long after = 0;
                 var marker = target.IndexOf("after=");
                 if (marker >= 0)
                 {
                     var raw = target.Substring(marker + 6).Split('&')[0];
-                    Int32.TryParse(raw, out after);
+                    Int64.TryParse(raw, out after);
                 }
-                body = Json.Serialize(Commands.Where(command => Convert.ToInt32(command["id"]) > after).ToArray());
+                body = Json.Serialize(Commands.Where(command => Convert.ToInt64(command["id"]) > after).ToArray());
             }
             else if (path == "/state" || path == "/commands")
             {
@@ -524,6 +541,555 @@ public static class IslandAudioBridge
 }
 "@
 
+# Keep the frame path compiled and let WPF/DWM pace it to the display refresh.
+Add-Type -ReferencedAssemblies PresentationFramework, PresentationCore, WindowsBase, System.Xaml @'
+using System;
+using System.Diagnostics;
+using System.Runtime.InteropServices;
+using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Input;
+using System.Windows.Interop;
+using System.Windows.Media;
+
+// Read-only Core Audio session peaks. No microphone, loopback recording or audio rerouting.
+public sealed class IslandAudioMeter : IDisposable
+{
+    [ComImport, Guid("BCDE0395-E52F-467C-8E3D-C4579291692E")]
+    private class DeviceEnumeratorObject { }
+    [ComImport, Guid("A95664D2-9614-4F35-A746-DE8DB63617E6"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    private interface DeviceEnumerator
+    {
+        [PreserveSig] int EnumAudioEndpoints(int flow, uint mask, out DeviceCollection devices);
+    }
+    [ComImport, Guid("0BD7A1BE-7A1A-44DB-8397-CC5392387B5E"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    private interface DeviceCollection
+    {
+        [PreserveSig] int GetCount(out uint count);
+        [PreserveSig] int Item(uint index, out AudioDevice device);
+    }
+    [ComImport, Guid("D666063F-1587-4E43-81F1-B948E807363F"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    private interface AudioDevice
+    {
+        [PreserveSig] int Activate(ref Guid iid, uint context, IntPtr parameters,
+            [MarshalAs(UnmanagedType.IUnknown)] out object result);
+    }
+    [ComImport, Guid("77AA99A0-1BD6-484F-8BC7-2C654C9A9B6F"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    private interface SessionManager
+    {
+        [PreserveSig] int GetAudioSessionControl(ref Guid id, uint flags, out IntPtr control);
+        [PreserveSig] int GetSimpleAudioVolume(ref Guid id, uint flags, out IntPtr volume);
+        [PreserveSig] int GetSessionEnumerator(out SessionEnumerator sessions);
+    }
+    [ComImport, Guid("E2F5BB11-0570-40CA-ACDD-3AA01277DEE8"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    private interface SessionEnumerator
+    {
+        [PreserveSig] int GetCount(out int count);
+        [PreserveSig] int GetSession(int index, [MarshalAs(UnmanagedType.IUnknown)] out object session);
+    }
+    [ComImport, Guid("bfb7ff88-7239-4fc9-8fa2-07c950be9c6d"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    private interface SessionControl
+    {
+        [PreserveSig] int GetState(out int state);
+        [PreserveSig] int GetDisplayName([MarshalAs(UnmanagedType.LPWStr)] out string name);
+        [PreserveSig] int SetDisplayName([MarshalAs(UnmanagedType.LPWStr)] string name, ref Guid context);
+        [PreserveSig] int GetIconPath([MarshalAs(UnmanagedType.LPWStr)] out string path);
+        [PreserveSig] int SetIconPath([MarshalAs(UnmanagedType.LPWStr)] string path, ref Guid context);
+        [PreserveSig] int GetGroupingParam(out Guid group);
+        [PreserveSig] int SetGroupingParam(ref Guid group, ref Guid context);
+        [PreserveSig] int RegisterAudioSessionNotification(IntPtr events);
+        [PreserveSig] int UnregisterAudioSessionNotification(IntPtr events);
+        [PreserveSig] int GetSessionIdentifier([MarshalAs(UnmanagedType.LPWStr)] out string id);
+        [PreserveSig] int GetSessionInstanceIdentifier([MarshalAs(UnmanagedType.LPWStr)] out string id);
+        [PreserveSig] int GetProcessId(out uint processId);
+    }
+    [ComImport, Guid("C02216F6-8C67-4B5B-9D00-D008E73E0064"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    private interface PeakMeter
+    {
+        [PreserveSig] int GetPeakValue(out float peak);
+    }
+
+    private readonly System.Threading.AutoResetEvent wake = new System.Threading.AutoResetEvent(false);
+    private readonly System.Threading.Thread worker;
+    private volatile bool enabled, stopping, available;
+    private volatile float peak;
+    private volatile string source = "youtube", lastError = "";
+    public float Peak { get { return peak; } }
+    public bool Available { get { return available; } }
+    public string LastError { get { return lastError; } }
+
+    public IslandAudioMeter()
+    {
+        worker = new System.Threading.Thread(ReadLevels) { IsBackground = true, Name = "IslandAudioMeter" };
+        worker.SetApartmentState(System.Threading.ApartmentState.MTA);
+        worker.Start();
+    }
+    public void SetSource(string value)
+    {
+        value = (value ?? "youtube").ToLowerInvariant();
+        if (source == value || stopping) return;
+        source = value; peak = 0; available = false; wake.Set();
+    }
+    public void SetEnabled(bool value)
+    {
+        if (enabled == value || stopping) return;
+        enabled = value;
+        if (!value) peak = 0;
+        wake.Set();
+    }
+    private static bool Matches(string app, string process)
+    {
+        process = process.ToLowerInvariant();
+        if (app.Contains("opera")) return process == "opera";
+        if (app.Contains("chrome")) return process == "chrome";
+        if (app.Contains("spotify")) return process == "spotify";
+        if (app.Contains("vlc") || app.Contains("videolan")) return process == "vlc";
+        if (app.Contains("edge")) return process == "msedge";
+        return app == "youtube" && (process == "opera" || process == "chrome" ||
+            process == "msedge" || process == "firefox" || process == "brave" || process == "vivaldi");
+    }
+    private static void Release(object value)
+    {
+        if (value != null && Marshal.IsComObject(value)) Marshal.ReleaseComObject(value);
+    }
+    private static void Clear(System.Collections.Generic.List<PeakMeter> meters)
+    {
+        foreach (var meter in meters) Release(meter);
+        meters.Clear();
+    }
+    private static void FindMeters(string app, System.Collections.Generic.List<PeakMeter> meters)
+    {
+        DeviceEnumerator enumerator = null;
+        DeviceCollection devices = null;
+        try
+        {
+            enumerator = (DeviceEnumerator)new DeviceEnumeratorObject();
+            Marshal.ThrowExceptionForHR(enumerator.EnumAudioEndpoints(0, 1, out devices));
+            uint count;
+            Marshal.ThrowExceptionForHR(devices.GetCount(out count));
+            for (uint deviceIndex = 0; deviceIndex < count; deviceIndex++)
+            {
+                AudioDevice device = null;
+                object managerObject = null;
+                SessionEnumerator sessions = null;
+                try
+                {
+                    if (devices.Item(deviceIndex, out device) < 0) continue;
+                    var iid = typeof(SessionManager).GUID;
+                    if (device.Activate(ref iid, 23, IntPtr.Zero, out managerObject) < 0) continue;
+                    if (((SessionManager)managerObject).GetSessionEnumerator(out sessions) < 0) continue;
+                    int sessionCount;
+                    if (sessions.GetCount(out sessionCount) < 0) continue;
+                    for (int index = 0; index < sessionCount; index++)
+                    {
+                        object session = null;
+                        try
+                        {
+                            if (sessions.GetSession(index, out session) < 0) continue;
+                            uint processId;
+                            var control = session as SessionControl;
+                            if (control == null || control.GetProcessId(out processId) < 0 || processId == 0) continue;
+                            string processName;
+                            try { using (var process = Process.GetProcessById((int)processId)) processName = process.ProcessName; }
+                            catch (ArgumentException) { continue; } // Process ended during enumeration.
+                            catch (System.ComponentModel.Win32Exception) { continue; }
+                            if (!Matches(app, processName)) continue;
+                            var meter = session as PeakMeter;
+                            if (meter != null) { meters.Add(meter); session = null; } // Transfer this RCW to the list.
+                        }
+                        finally { Release(session); }
+                    }
+                }
+                finally { Release(sessions); Release(managerObject); Release(device); }
+            }
+        }
+        finally { Release(devices); Release(enumerator); }
+    }
+    private void ReadLevels()
+    {
+        var meters = new System.Collections.Generic.List<PeakMeter>();
+        var clock = Stopwatch.StartNew();
+        double nextScan = 0;
+        string boundSource = "";
+        try
+        {
+            while (!stopping)
+            {
+                if (!enabled)
+                {
+                    peak = 0; available = false; Clear(meters); nextScan = 0;
+                    wake.WaitOne();
+                    continue;
+                }
+                try
+                {
+                    if (boundSource != source || clock.Elapsed.TotalSeconds >= nextScan)
+                    {
+                        Clear(meters);
+                        boundSource = source;
+                        FindMeters(boundSource, meters);
+                        nextScan = clock.Elapsed.TotalSeconds + 3;
+                    }
+                    float loudest = 0;
+                    bool valid = false;
+                    foreach (var meter in meters)
+                    {
+                        float value;
+                        if (meter.GetPeakValue(out value) >= 0 && !Single.IsNaN(value))
+                        {
+                            loudest = Math.Max(loudest, value); valid = true;
+                        }
+                    }
+                    available = valid;
+                    peak = enabled ? Math.Max(0, Math.Min(1, loudest)) : 0;
+                    lastError = "";
+                }
+                catch (Exception error)
+                {
+                    peak = 0; available = false; lastError = error.Message;
+                    Clear(meters); nextScan = clock.Elapsed.TotalSeconds + 3;
+                }
+                // Audio peaks at ~30 Hz; visual interpolation still uses the monitor cadence.
+                wake.WaitOne(33);
+            }
+        }
+        finally { Clear(meters); wake.Dispose(); }
+    }
+    public void Dispose()
+    {
+        if (stopping) return;
+        stopping = true; enabled = false; peak = 0;
+        wake.Set();
+        worker.Join(500);
+    }
+}
+
+
+// One composition callback; no polling timer or PowerShell work for idle/music frames.
+public sealed class IslandAnimationDriver : IDisposable
+{
+    [StructLayout(LayoutKind.Sequential)]
+    private struct NativePoint { public int X, Y; }
+    [StructLayout(LayoutKind.Sequential)]
+    private struct NativeRect { public int Left, Top, Right, Bottom; }
+    [StructLayout(LayoutKind.Sequential)]
+    private struct MonitorInfo { public int Size; public NativeRect Monitor, Work; public uint Flags; }
+    [DllImport("user32.dll")] private static extern bool GetCursorPos(out NativePoint point);
+    [DllImport("user32.dll")] private static extern bool GetWindowRect(IntPtr hwnd, out NativeRect rect);
+    [DllImport("user32.dll")] private static extern bool SetWindowPos(IntPtr hwnd, IntPtr after, int x, int y, int width, int height, uint flags);
+    [DllImport("user32.dll")] private static extern IntPtr MonitorFromWindow(IntPtr hwnd, uint flags);
+    [DllImport("user32.dll")] private static extern bool GetMonitorInfo(IntPtr monitor, ref MonitorInfo info);
+
+    // Exact damped spring solution: the feel is independent of 60/144/180/240 Hz.
+    private struct Spring
+    {
+        public double Value, Velocity;
+        public void Step(double target, double dt)
+        {
+            const double decay = 14.4; // frequency 24 rad/s, damping ratio .60
+            const double oscillation = 19.2;
+            double offset = Value - target;
+            double b = (Velocity + decay * offset) / oscillation;
+            double sin = Math.Sin(oscillation * dt), cos = Math.Cos(oscillation * dt);
+            double envelope = Math.Exp(-decay * dt);
+            Value = target + envelope * (offset * cos + b * sin);
+            Velocity = envelope * (Velocity * cos - (decay * b + oscillation * offset) * sin);
+        }
+        public bool Settled(double tolerance)
+        {
+            return Math.Abs(Value) < tolerance && Math.Abs(Velocity) < tolerance * 24;
+        }
+    }
+
+    private readonly Window window;
+    private readonly FrameworkElement island, details;
+    private readonly RectangleGeometry progressClip;
+    private readonly TextBlock timeText;
+    private readonly MatrixTransform jelly;
+    private readonly ScaleTransform[] mini;
+    private readonly IslandAudioMeter audio = new IslandAudioMeter();
+    private readonly double[] audioHistory = new double[9];
+    private int audioHead;
+    private double lastAudioSample;
+    private readonly Stopwatch clock = Stopwatch.StartNew();
+    private Spring stretchX, stretchY, lagX, lagY;
+    private bool subscribed, disposed, scriptFrames, playing, visualDirty, jellyActive;
+    private double lastFrame, lastLeft, lastTop, velocityX, velocityY, current, duration, mediaAt;
+    private TimeSpan lastRenderingTime = TimeSpan.MinValue;
+    private int displayedSecond = -1;
+    private IntPtr hwnd;
+    private NativePoint pointerStart;
+    private NativeRect windowStart;
+
+    public event EventHandler ScriptFrame;
+    public event EventHandler DragMoved;
+    public event EventHandler DragEnded;
+    public bool Dragging { get; private set; }
+    public bool DragCancelled { get; private set; }
+    public bool DragHasMoved { get; private set; }
+    public bool IsRendering { get { return subscribed; } }
+    public bool IsJellyActive { get { return jellyActive; } }
+    public bool ScriptFrames
+    {
+        get { return scriptFrames; }
+        set { scriptFrames = value; UpdateSubscription(); }
+    }
+
+    public IslandAnimationDriver(Window window, FrameworkElement island, MatrixTransform jelly,
+        FrameworkElement details, FrameworkElement progress, TextBlock timeText,
+        ScaleTransform[] mini)
+    {
+        this.window = window; this.island = island; this.jelly = jelly;
+        this.details = details; this.timeText = timeText;
+        progressClip = (RectangleGeometry)progress.Clip;
+        this.mini = mini;
+        window.PreviewMouseLeftButtonUp += OnMouseUp;
+        window.LostMouseCapture += OnLostCapture;
+        window.PreviewKeyDown += OnKeyDown;
+        window.IsVisibleChanged += OnVisibilityChanged;
+        window.Deactivated += OnDeactivated;
+        window.StateChanged += OnStateChanged;
+    }
+
+    public void SetAudioSource(string source) { audio.SetSource(source); }
+
+    private void UpdateSubscription()
+    {
+        audio.SetEnabled(!disposed && playing && window.IsVisible && window.WindowState != WindowState.Minimized);
+        bool needed = !disposed && window.IsVisible && window.WindowState != WindowState.Minimized &&
+            (Dragging || jellyActive || scriptFrames || playing || visualDirty);
+        if (needed == subscribed) return;
+        subscribed = needed;
+        if (needed)
+        {
+            lastFrame = clock.Elapsed.TotalSeconds;
+            lastRenderingTime = TimeSpan.MinValue;
+            CompositionTarget.Rendering += OnRendering;
+        }
+        else CompositionTarget.Rendering -= OnRendering;
+    }
+
+    public void UpdateMedia(bool isPlaying, double position, double length, double reportedAt)
+    {
+        playing = isPlaying;
+        duration = Math.Max(0, length);
+        current = Math.Max(0, position);
+        if (playing && reportedAt > 0)
+            current += Math.Max(0, (DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - reportedAt) / 1000.0);
+        mediaAt = clock.Elapsed.TotalSeconds;
+        visualDirty = true;
+        UpdateSubscription();
+    }
+
+    public bool BeginDrag()
+    {
+        if (disposed || Dragging || Mouse.LeftButton != MouseButtonState.Pressed) return false;
+        hwnd = new WindowInteropHelper(window).Handle;
+        if (!GetCursorPos(out pointerStart) || !GetWindowRect(hwnd, out windowStart)) return false;
+        if (!Mouse.Capture(window, CaptureMode.Element)) return false;
+        DragCancelled = false; DragHasMoved = false; Dragging = true;
+        lastLeft = window.Left; lastTop = window.Top;
+        velocityX = velocityY = 0;
+        UpdateSubscription();
+        return true;
+    }
+
+    private void MoveToCursor()
+    {
+        NativePoint point;
+        if (!GetCursorPos(out point)) { EndDrag(true); return; }
+        int dx = point.X - pointerStart.X, dy = point.Y - pointerStart.Y;
+        if (!DragHasMoved && Math.Abs(dx) < SystemParameters.MinimumHorizontalDragDistance &&
+            Math.Abs(dy) < SystemParameters.MinimumVerticalDragDistance) return;
+        DragHasMoved = true;
+        NativeRect bounds;
+        if (!GetWindowRect(hwnd, out bounds)) { EndDrag(true); return; }
+        int x = windowStart.Left + dx, y = windowStart.Top + dy;
+        if (bounds.Left == x && bounds.Top == y) return;
+        // One native move per composition frame, even with a 1000+ Hz mouse.
+        if (!SetWindowPos(hwnd, IntPtr.Zero, x, y, 0, 0, 0x0015)) { EndDrag(true); return; }
+        var moved = DragMoved;
+        if (moved != null) moved(this, EventArgs.Empty);
+    }
+
+    public void EndDrag(bool cancelled)
+    {
+        if (!Dragging) return;
+        Dragging = false;
+        DragCancelled = cancelled;
+        if (cancelled) SetWindowPos(hwnd, IntPtr.Zero, windowStart.Left, windowStart.Top, 0, 0, 0x0015);
+        if (Mouse.Captured == window) Mouse.Capture(null);
+        velocityX = velocityY = 0;
+        stretchX = stretchY = lagX = lagY = new Spring();
+        jellyActive = false;
+        jelly.Matrix = Matrix.Identity;
+        var ended = DragEnded;
+        if (ended != null) ended(this, EventArgs.Empty);
+        UpdateSubscription();
+    }
+
+    public Rect GetWorkArea()
+    {
+        var info = new MonitorInfo { Size = Marshal.SizeOf(typeof(MonitorInfo)) };
+        if (hwnd != IntPtr.Zero && GetMonitorInfo(MonitorFromWindow(hwnd, 2), ref info))
+        {
+            var source = PresentationSource.FromVisual(window);
+            if (source != null && source.CompositionTarget != null)
+            {
+                var toDip = source.CompositionTarget.TransformFromDevice;
+                return new Rect(toDip.Transform(new Point(info.Work.Left, info.Work.Top)),
+                    toDip.Transform(new Point(info.Work.Right, info.Work.Bottom)));
+            }
+        }
+        return SystemParameters.WorkArea;
+    }
+
+    private void OnMouseUp(object sender, MouseButtonEventArgs e)
+    {
+        if (!Dragging) return;
+        MoveToCursor();
+        EndDrag(false);
+        e.Handled = true;
+    }
+    private void OnLostCapture(object sender, MouseEventArgs e) { if (Dragging) EndDrag(true); }
+    private void OnDeactivated(object sender, EventArgs e) { if (Dragging) EndDrag(true); }
+    private void OnStateChanged(object sender, EventArgs e) { UpdateSubscription(); }
+    private void OnKeyDown(object sender, KeyEventArgs e)
+    {
+        if (Dragging && e.Key == Key.Escape) { EndDrag(true); e.Handled = true; }
+    }
+    private void OnVisibilityChanged(object sender, DependencyPropertyChangedEventArgs e)
+    {
+        if (!window.IsVisible && Dragging) EndDrag(true);
+        UpdateSubscription();
+    }
+
+    private void OnRendering(object sender, EventArgs args)
+    {
+        var frame = (RenderingEventArgs)args;
+        if (frame.RenderingTime == lastRenderingTime) return;
+        lastRenderingTime = frame.RenderingTime;
+        double now = clock.Elapsed.TotalSeconds;
+        double dt = Math.Max(.0001, Math.Min(.05, now - lastFrame));
+        lastFrame = now;
+        if (Dragging)
+        {
+            if (Mouse.LeftButton != MouseButtonState.Pressed) EndDrag(false);
+            else MoveToCursor();
+        }
+        if (scriptFrames)
+        {
+            var callback = ScriptFrame;
+            if (callback != null) callback(this, args);
+        }
+        if (Dragging || jellyActive) UpdateJelly(dt);
+        if (playing || visualDirty || scriptFrames) UpdateVisuals(now, dt);
+        UpdateSubscription();
+    }
+
+    private void UpdateJelly(double dt)
+    {
+        double targetX = 0, targetY = 0, targetLagX = 0, targetLagY = 0;
+        if (Dragging)
+        {
+            double follow = 1 - Math.Exp(-20 * dt);
+            velocityX += ((window.Left - lastLeft) / dt - velocityX) * follow;
+            velocityY += ((window.Top - lastTop) / dt - velocityY) * follow;
+            lastLeft = window.Left; lastTop = window.Top;
+            double x = Math.Abs(velocityX), y = Math.Abs(velocityY);
+            double speed = Math.Sqrt(x * x + y * y);
+            targetX = .17 * (x - .48 * y) / (speed + 320);
+            targetY = .15 * (y - .48 * x) / (speed + 320);
+            targetLagX = Math.Max(-12, Math.Min(12, -velocityX * .012));
+            targetLagY = Math.Max(-6, Math.Min(6, -velocityY * .006));
+        }
+        stretchX.Step(targetX, dt); stretchY.Step(targetY, dt);
+        lagX.Step(targetLagX, dt); lagY.Step(targetLagY, dt);
+        jellyActive = !(stretchX.Settled(.00015) && stretchY.Settled(.00015) &&
+            lagX.Settled(.025) && lagY.Settled(.025)) ||
+            Math.Abs(targetX) + Math.Abs(targetY) + Math.Abs(targetLagX) + Math.Abs(targetLagY) > .0001;
+        if (!jellyActive)
+        {
+            stretchX = stretchY = lagX = lagY = new Spring();
+            jelly.Matrix = Matrix.Identity;
+        }
+        else
+        {
+            // Use the available padding as the spring stretches, including during a morph.
+            var baseScale = (ScaleTransform)((TransformGroup)island.RenderTransform).Children[0];
+            double width = Math.Max(1, island.ActualWidth * baseScale.ScaleX);
+            double height = Math.Max(1, island.ActualHeight * baseScale.ScaleY);
+            double sx = Math.Max(.8, Math.Min(1 + stretchX.Value, (window.ActualWidth - 4) / width));
+            double sy = Math.Max(.8, Math.Min(1 + stretchY.Value, (window.ActualHeight - 4) / height));
+            double extraX = (width * sx - island.ActualWidth) / 2;
+            double extraY = (height * sy - island.ActualHeight) / 2;
+            double side = (window.ActualWidth - island.ActualWidth) / 2;
+            double top = island.VerticalAlignment == VerticalAlignment.Bottom ? window.ActualHeight - island.ActualHeight - 8 : 8;
+            double bottom = window.ActualHeight - island.ActualHeight - top;
+            double offsetX = Math.Max(extraX - side + 2, Math.Min(lagX.Value, side - extraX - 2));
+            double offsetY = Math.Max(extraY - top + 2, Math.Min(lagY.Value, bottom - extraY - 2));
+            jelly.Matrix = new Matrix(sx, 0, 0, sy, offsetX, offsetY);
+        }
+    }
+
+    private void UpdateVisuals(double now, double dt)
+    {
+        bool settling = false;
+        if (now - lastAudioSample >= 1.0 / 30)
+        {
+            lastAudioSample = now;
+            audioHead = (audioHead + 1) % audioHistory.Length;
+            audioHistory[audioHead] = playing ? Math.Min(1, Math.Sqrt(audio.Peak) * 1.45) : 0;
+        }
+        for (int bar = 0; bar < mini.Length; bar++)
+        {
+            // A short history of actual music levels, not synthetic frequency bands.
+            double level = playing ? audioHistory[(audioHead - bar + audioHistory.Length) % audioHistory.Length] : 0;
+            double target = .10 + .90 * level;
+            double smoothing = 1 - Math.Exp(-dt * (target > mini[bar].ScaleY ? 32 : 12));
+            double value = mini[bar].ScaleY + (target - mini[bar].ScaleY) * smoothing;
+            if (Math.Abs(value - target) < .001) value = target;
+            else settling = true;
+            if (mini[bar].ScaleY != value) mini[bar].ScaleY = value;
+        }
+        if (details.Visibility == Visibility.Visible && details.Opacity > .01)
+        {
+            double position = Math.Min(duration, current + (playing ? now - mediaAt : 0));
+            int second = (int)Math.Max(0, Math.Floor(position));
+            if (second != displayedSecond)
+            {
+                timeText.Text = String.Format("{0}:{1:00}", second / 60, second % 60);
+                displayedSecond = second;
+            }
+            double width = duration > 0 ? details.ActualWidth * position / duration : 0;
+            // A clip changes drawing only; animating Width would rerun layout every frame.
+            if (progressClip.Rect.Width != width) progressClip.Rect = new Rect(0, 0, width, 4);
+        }
+        visualDirty = settling;
+    }
+
+    public void Dispose()
+    {
+        if (disposed) return;
+        disposed = true;
+        audio.Dispose();
+        Dragging = false;
+        if (Mouse.Captured == window) Mouse.Capture(null);
+        CompositionTarget.Rendering -= OnRendering;
+        subscribed = false;
+        window.PreviewMouseLeftButtonUp -= OnMouseUp;
+        window.LostMouseCapture -= OnLostCapture;
+        window.PreviewKeyDown -= OnKeyDown;
+        window.IsVisibleChanged -= OnVisibilityChanged;
+        window.Deactivated -= OnDeactivated;
+        window.StateChanged -= OnStateChanged;
+        ScriptFrame = DragMoved = DragEnded = null;
+        jelly.Matrix = Matrix.Identity;
+    }
+}
+
+'@
+
 [xml]$xaml = @"
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
@@ -538,6 +1104,69 @@ public static class IslandAudioBridge
         TextOptions.TextRenderingMode="ClearType"
         RenderOptions.EdgeMode="Unspecified">
   <Window.Resources>
+    <Style x:Key="QueueSongStyle" TargetType="{x:Type Button}">
+      <Setter Property="Background" Value="Transparent"/>
+      <Setter Property="Foreground" Value="#CFFFFFFF"/>
+      <Setter Property="BorderThickness" Value="0"/>
+      <Setter Property="Cursor" Value="Hand"/>
+      <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+      <Setter Property="Padding" Value="5,0"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="{x:Type Button}">
+            <Grid x:Name="SongShell" Background="{TemplateBinding Background}" ClipToBounds="True">
+              <Border x:Name="SongHighlight" CornerRadius="5" Background="#26FFFFFF"
+                      BorderBrush="#16FFFFFF" BorderThickness="1" Opacity="0" IsHitTestVisible="False"/>
+              <ContentPresenter x:Name="SongContent" Margin="{TemplateBinding Padding}"
+                                HorizontalAlignment="Stretch" VerticalAlignment="Center">
+                <ContentPresenter.RenderTransform><TranslateTransform X="0"/></ContentPresenter.RenderTransform>
+              </ContentPresenter>
+            </Grid>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsMouseOver" Value="True">
+                <Setter Property="Foreground" Value="White"/>
+                <Trigger.EnterActions>
+                  <BeginStoryboard>
+                    <Storyboard>
+                      <DoubleAnimation Storyboard.TargetName="SongHighlight" Storyboard.TargetProperty="Opacity"
+                                       To="1" Duration="0:0:0.14">
+                        <DoubleAnimation.EasingFunction><CubicEase EasingMode="EaseOut"/></DoubleAnimation.EasingFunction>
+                      </DoubleAnimation>
+                      <DoubleAnimation Storyboard.TargetName="SongContent" Storyboard.TargetProperty="(UIElement.RenderTransform).(TranslateTransform.X)"
+                                       To="3" Duration="0:0:0.18">
+                        <DoubleAnimation.EasingFunction><CubicEase EasingMode="EaseOut"/></DoubleAnimation.EasingFunction>
+                      </DoubleAnimation>
+                    </Storyboard>
+                  </BeginStoryboard>
+                </Trigger.EnterActions>
+                <Trigger.ExitActions>
+                  <BeginStoryboard>
+                    <Storyboard>
+                      <DoubleAnimation Storyboard.TargetName="SongHighlight" Storyboard.TargetProperty="Opacity"
+                                       To="0" Duration="0:0:0.18">
+                        <DoubleAnimation.EasingFunction><CubicEase EasingMode="EaseOut"/></DoubleAnimation.EasingFunction>
+                      </DoubleAnimation>
+                      <DoubleAnimation Storyboard.TargetName="SongContent" Storyboard.TargetProperty="(UIElement.RenderTransform).(TranslateTransform.X)"
+                                       To="0" Duration="0:0:0.18">
+                        <DoubleAnimation.EasingFunction><CubicEase EasingMode="EaseOut"/></DoubleAnimation.EasingFunction>
+                      </DoubleAnimation>
+                    </Storyboard>
+                  </BeginStoryboard>
+                </Trigger.ExitActions>
+              </Trigger>
+              <Trigger Property="IsKeyboardFocused" Value="True">
+                <Setter TargetName="SongShell" Property="Background" Value="#20FFFFFF"/>
+                <Setter Property="Foreground" Value="White"/>
+              </Trigger>
+              <Trigger Property="IsPressed" Value="True">
+                <Setter TargetName="SongHighlight" Property="Background" Value="#38FFFFFF"/>
+              </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+
     <Style x:Key="TransportButtonStyle" TargetType="{x:Type Button}">
       <Setter Property="Background" Value="Transparent"/>
       <Setter Property="BorderBrush" Value="Transparent"/>
@@ -645,37 +1274,40 @@ public static class IslandAudioBridge
   <Grid>
     <Border x:Name="Island" Width="352" Height="74"
             HorizontalAlignment="Center" VerticalAlignment="Top" Margin="0,8,0,0"
-            CornerRadius="36" BorderThickness="1"
-            BorderBrush="#1FFFFFFF"
-            SnapsToDevicePixels="False"
+            CornerRadius="37" BorderThickness="1"
+            BorderBrush="#55FFFFFF"
+            SnapsToDevicePixels="True"
             RenderTransformOrigin="0.5,0.5">
       <Border.Background>
-        <SolidColorBrush x:Name="IslandFill" Color="#E8070709"/>
+        <SolidColorBrush x:Name="IslandFill" Color="#C008090D"/>
       </Border.Background>
       <Border.RenderTransform>
-        <ScaleTransform x:Name="IslandScale" ScaleX="1" ScaleY="1"/>
+        <TransformGroup>
+          <ScaleTransform x:Name="IslandScale" ScaleX="1" ScaleY="1"/>
+          <MatrixTransform x:Name="IslandJelly"/>
+        </TransformGroup>
       </Border.RenderTransform>
       <Border.Effect>
-        <DropShadowEffect Color="#000000" BlurRadius="34" ShadowDepth="10"
-                          Opacity="0.46" RenderingBias="Performance"/>
+        <DropShadowEffect Color="#000000" BlurRadius="27" ShadowDepth="7"
+                          Opacity="0.38" RenderingBias="Performance"/>
       </Border.Effect>
       <Grid ClipToBounds="True">
         <!-- glass inner top-lit highlight -->
-        <Border CornerRadius="35" BorderThickness="1" Margin="1"
+        <Border x:Name="GlassInnerEdge" CornerRadius="36" BorderThickness="1" Margin="1"
                 IsHitTestVisible="False">
           <Border.BorderBrush>
             <LinearGradientBrush StartPoint="0,0" EndPoint="0,1">
-              <GradientStop Color="#45FFFFFF" Offset="0"/>
-              <GradientStop Color="#0DFFFFFF" Offset="0.5"/>
-              <GradientStop Color="#0AFFFFFF" Offset="1"/>
+              <GradientStop Color="#42FFFFFF" Offset="0"/>
+              <GradientStop Color="#10FFFFFF" Offset="0.5"/>
+              <GradientStop Color="#08FFFFFF" Offset="1"/>
             </LinearGradientBrush>
           </Border.BorderBrush>
         </Border>
         <!-- subtle top specular sheen -->
-        <Border CornerRadius="36" IsHitTestVisible="False" Opacity="0.55">
+        <Border x:Name="GlassSheen" CornerRadius="37" IsHitTestVisible="False" Opacity="0.72">
           <Border.Background>
             <LinearGradientBrush StartPoint="0,0" EndPoint="0,1">
-              <GradientStop Color="#14FFFFFF" Offset="0"/>
+              <GradientStop Color="#28FFFFFF" Offset="0"/>
               <GradientStop Color="#00FFFFFF" Offset="0.28"/>
             </LinearGradientBrush>
           </Border.Background>
@@ -776,20 +1408,26 @@ public static class IslandAudioBridge
 
           <!-- expanded details -->
           <Grid x:Name="Details" Grid.Row="1" Margin="24,2,24,22"
-                Opacity="0" Visibility="Collapsed" IsHitTestVisible="False">
+                Opacity="0" Visibility="Collapsed" IsHitTestVisible="False"
+                RenderTransformOrigin="0.5,0.08">
+            <Grid.RenderTransform>
+              <ScaleTransform x:Name="DetailsScale" ScaleX="1" ScaleY="1"/>
+            </Grid.RenderTransform>
             <Grid.RowDefinitions>
               <RowDefinition Height="4"/>
               <RowDefinition Height="18"/>
               <RowDefinition Height="60"/>
-              <RowDefinition Height="38"/>
+            <RowDefinition Height="46"/>
               <RowDefinition Height="84"/>
               <RowDefinition Height="58"/>
               <RowDefinition Height="18"/>
             </Grid.RowDefinitions>
 
             <Border Grid.Row="0" Height="4" Background="#1EFFFFFF" CornerRadius="2">
-              <Border x:Name="ProgressFill" Width="0" HorizontalAlignment="Left"
-                      Background="#F2FFFFFF" CornerRadius="2"/>
+              <Border x:Name="ProgressFill" HorizontalAlignment="Stretch"
+                      Background="#F2FFFFFF" CornerRadius="2">
+                <Border.Clip><RectangleGeometry Rect="0,0,0,4" RadiusX="2" RadiusY="2"/></Border.Clip>
+              </Border>
             </Border>
 
             <Grid Grid.Row="1">
@@ -824,44 +1462,30 @@ public static class IslandAudioBridge
             </StackPanel>
 
             <Grid Grid.Row="3">
-              <Button x:Name="LikeButton" Width="36" Height="34" HorizontalAlignment="Left"
+              <Button x:Name="LikeButton" Width="42" Height="42" HorizontalAlignment="Left"
                       Style="{StaticResource TransportButtonStyle}" ToolTip="Gef&#228;llt mir">
-                <Path x:Name="LikeIcon"
-                      Data="M 7,17 H 3 V 8 H 7 M 7,8 L 11,2 C 12,2 13,3 13,4 V 7 H 18 C 19,7 19.5,8 19.2,9 L 17.5,16 C 17.3,16.7 16.7,17 16,17 H 7 Z"
-                      Stroke="#B8FFFFFF" StrokeThickness="1.5" StrokeLineJoin="Round"
-                      Width="20" Height="19" Stretch="Uniform"/>
+                <Grid Width="36" Height="36">
+                  <Path x:Name="LikeSpark" Data="M 18,1 L 18,7 M 18,29 L 18,35 M 1,18 L 7,18 M 29,18 L 35,18 M 6,6 L 10,10 M 26,26 L 30,30 M 30,6 L 26,10 M 10,26 L 6,30"
+                        Stroke="#FF68E38A" StrokeThickness="1.4" StrokeStartLineCap="Round"
+                        StrokeEndLineCap="Round" Opacity="0" RenderTransformOrigin="0.5,0.5">
+                    <Path.RenderTransform><ScaleTransform x:Name="LikeSparkScale" ScaleX="0.4" ScaleY="0.4"/></Path.RenderTransform>
+                  </Path>
+                  <Ellipse x:Name="LikePulseOuter" Width="28" Height="28" Stroke="#8868E38A"
+                           StrokeThickness="1.2" Opacity="0" RenderTransformOrigin="0.5,0.5">
+                    <Ellipse.RenderTransform><ScaleTransform x:Name="LikePulseOuterScale" ScaleX="0.4" ScaleY="0.4"/></Ellipse.RenderTransform>
+                  </Ellipse>
+                  <Ellipse x:Name="LikePulseInner" Width="22" Height="22" Stroke="#CC68E38A"
+                           StrokeThickness="1.2" Opacity="0" RenderTransformOrigin="0.5,0.5">
+                    <Ellipse.RenderTransform><ScaleTransform x:Name="LikePulseInnerScale" ScaleX="0.4" ScaleY="0.4"/></Ellipse.RenderTransform>
+                  </Ellipse>
+                  <Path x:Name="LikeIcon"
+                        Data="M 7,17 H 3 V 8 H 7 M 7,8 L 11,2 C 12,2 13,3 13,4 V 7 H 18 C 19,7 19.5,8 19.2,9 L 17.5,16 C 17.3,16.7 16.7,17 16,17 H 7 Z"
+                        Stroke="#B8FFFFFF" StrokeThickness="1.7" StrokeLineJoin="Round"
+                        Width="20" Height="19" Stretch="Uniform" RenderTransformOrigin="0.5,0.5">
+                    <Path.RenderTransform><ScaleTransform x:Name="LikeIconScale" ScaleX="1" ScaleY="1"/></Path.RenderTransform>
+                  </Path>
+                </Grid>
               </Button>
-
-              <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" VerticalAlignment="Center">
-                <Rectangle Width="3" Height="18" RadiusX="1.5" RadiusY="1.5"
-                           Fill="#A8FFFFFF" Margin="2,0" RenderTransformOrigin="0.5,1">
-                  <Rectangle.RenderTransform><ScaleTransform x:Name="VizScale1" ScaleY="0.2"/></Rectangle.RenderTransform>
-                </Rectangle>
-                <Rectangle Width="3" Height="18" RadiusX="1.5" RadiusY="1.5"
-                           Fill="#C8FFFFFF" Margin="2,0" RenderTransformOrigin="0.5,1">
-                  <Rectangle.RenderTransform><ScaleTransform x:Name="VizScale2" ScaleY="0.2"/></Rectangle.RenderTransform>
-                </Rectangle>
-                <Rectangle Width="3" Height="18" RadiusX="1.5" RadiusY="1.5"
-                           Fill="#E8FFFFFF" Margin="2,0" RenderTransformOrigin="0.5,1">
-                  <Rectangle.RenderTransform><ScaleTransform x:Name="VizScale3" ScaleY="0.2"/></Rectangle.RenderTransform>
-                </Rectangle>
-                <Rectangle Width="3" Height="18" RadiusX="1.5" RadiusY="1.5"
-                           Fill="#FFFFFFFF" Margin="2,0" RenderTransformOrigin="0.5,1">
-                  <Rectangle.RenderTransform><ScaleTransform x:Name="VizScale4" ScaleY="0.2"/></Rectangle.RenderTransform>
-                </Rectangle>
-                <Rectangle Width="3" Height="18" RadiusX="1.5" RadiusY="1.5"
-                           Fill="#E8FFFFFF" Margin="2,0" RenderTransformOrigin="0.5,1">
-                  <Rectangle.RenderTransform><ScaleTransform x:Name="VizScale5" ScaleY="0.2"/></Rectangle.RenderTransform>
-                </Rectangle>
-                <Rectangle Width="3" Height="18" RadiusX="1.5" RadiusY="1.5"
-                           Fill="#C8FFFFFF" Margin="2,0" RenderTransformOrigin="0.5,1">
-                  <Rectangle.RenderTransform><ScaleTransform x:Name="VizScale6" ScaleY="0.2"/></Rectangle.RenderTransform>
-                </Rectangle>
-                <Rectangle Width="3" Height="18" RadiusX="1.5" RadiusY="1.5"
-                           Fill="#A8FFFFFF" Margin="2,0" RenderTransformOrigin="0.5,1">
-                  <Rectangle.RenderTransform><ScaleTransform x:Name="VizScale7" ScaleY="0.2"/></Rectangle.RenderTransform>
-                </Rectangle>
-              </StackPanel>
 
               <Button x:Name="DislikeButton" Width="36" Height="34" HorizontalAlignment="Right"
                       Style="{StaticResource TransportButtonStyle}" ToolTip="Gef&#228;llt mir nicht">
@@ -894,23 +1518,41 @@ public static class IslandAudioBridge
                          Foreground="#52FFFFFF" FontSize="9" TextAlignment="Right"
                          TextTrimming="CharacterEllipsis"/>
 
-              <TextBlock Grid.Row="1" Grid.Column="0" Text="1" Foreground="#48FFFFFF" FontSize="9.5" VerticalAlignment="Center"/>
-              <TextBlock x:Name="QueueTitle1" Grid.Row="1" Grid.Column="1" Foreground="#D8FFFFFF" FontSize="10.5"
-                         VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
-              <TextBlock x:Name="QueueArtist1" Grid.Row="1" Grid.Column="2" Foreground="#62FFFFFF" FontSize="9.5"
-                         TextAlignment="Right" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
+              <Button x:Name="QueueSong1" Grid.Row="1" Grid.ColumnSpan="3" IsEnabled="False"
+                      Style="{StaticResource QueueSongStyle}" ToolTip="Song abspielen">
+                <Grid>
+                  <Grid.ColumnDefinitions><ColumnDefinition Width="17"/><ColumnDefinition Width="*"/><ColumnDefinition Width="119"/></Grid.ColumnDefinitions>
+                  <TextBlock Text="1" Opacity="0.45" FontSize="9.5" VerticalAlignment="Center"/>
+                  <TextBlock x:Name="QueueTitle1" Grid.Column="1" FontSize="10.5" Margin="0,0,6,0"
+                             VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
+                  <TextBlock x:Name="QueueArtist1" Grid.Column="2" Opacity="0.55" FontSize="9.5"
+                             TextAlignment="Right" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
+                </Grid>
+              </Button>
 
-              <TextBlock Grid.Row="2" Grid.Column="0" Text="2" Foreground="#48FFFFFF" FontSize="9.5" VerticalAlignment="Center"/>
-              <TextBlock x:Name="QueueTitle2" Grid.Row="2" Grid.Column="1" Foreground="#B8FFFFFF" FontSize="10.5"
-                         VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
-              <TextBlock x:Name="QueueArtist2" Grid.Row="2" Grid.Column="2" Foreground="#52FFFFFF" FontSize="9.5"
-                         TextAlignment="Right" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
+              <Button x:Name="QueueSong2" Grid.Row="2" Grid.ColumnSpan="3" IsEnabled="False"
+                      Style="{StaticResource QueueSongStyle}" ToolTip="Song abspielen">
+                <Grid>
+                  <Grid.ColumnDefinitions><ColumnDefinition Width="17"/><ColumnDefinition Width="*"/><ColumnDefinition Width="119"/></Grid.ColumnDefinitions>
+                  <TextBlock Text="2" Opacity="0.45" FontSize="9.5" VerticalAlignment="Center"/>
+                  <TextBlock x:Name="QueueTitle2" Grid.Column="1" FontSize="10.5" Margin="0,0,6,0"
+                             VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
+                  <TextBlock x:Name="QueueArtist2" Grid.Column="2" Opacity="0.55" FontSize="9.5"
+                             TextAlignment="Right" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
+                </Grid>
+              </Button>
 
-              <TextBlock Grid.Row="3" Grid.Column="0" Text="3" Foreground="#48FFFFFF" FontSize="9.5" VerticalAlignment="Center"/>
-              <TextBlock x:Name="QueueTitle3" Grid.Row="3" Grid.Column="1" Foreground="#98FFFFFF" FontSize="10.5"
-                         VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
-              <TextBlock x:Name="QueueArtist3" Grid.Row="3" Grid.Column="2" Foreground="#42FFFFFF" FontSize="9.5"
-                         TextAlignment="Right" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
+              <Button x:Name="QueueSong3" Grid.Row="3" Grid.ColumnSpan="3" IsEnabled="False"
+                      Style="{StaticResource QueueSongStyle}" ToolTip="Song abspielen">
+                <Grid>
+                  <Grid.ColumnDefinitions><ColumnDefinition Width="17"/><ColumnDefinition Width="*"/><ColumnDefinition Width="119"/></Grid.ColumnDefinitions>
+                  <TextBlock Text="3" Opacity="0.45" FontSize="9.5" VerticalAlignment="Center"/>
+                  <TextBlock x:Name="QueueTitle3" Grid.Column="1" FontSize="10.5" Margin="0,0,6,0"
+                             VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
+                  <TextBlock x:Name="QueueArtist3" Grid.Column="2" Opacity="0.55" FontSize="9.5"
+                             TextAlignment="Right" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
+                </Grid>
+              </Button>
             </Grid>
 
             <StackPanel Grid.Row="5" Orientation="Horizontal"
@@ -974,12 +1616,9 @@ public static class IslandAudioBridge
               <Button x:Name="SettingsButton" Width="48" Height="48" Margin="7,0,3,0"
                       Style="{StaticResource AppDockButtonStyle}">
                 <Grid Width="20" Height="20">
-                  <Path Data="M 2,4 H 18 M 2,10 H 18 M 2,16 H 18"
-                        Stroke="#D8FFFFFF" StrokeThickness="1.6"
-                        StrokeStartLineCap="Round" StrokeEndLineCap="Round"/>
-                  <Ellipse Width="4" Height="4" Fill="#F2FFFFFF" HorizontalAlignment="Left" Margin="4,0,0,12"/>
-                  <Ellipse Width="4" Height="4" Fill="#F2FFFFFF" HorizontalAlignment="Right" Margin="0,6,5,6"/>
-                  <Ellipse Width="4" Height="4" Fill="#F2FFFFFF" HorizontalAlignment="Left" Margin="8,12,0,0"/>
+                  <Path Width="19" Height="19" Stretch="Uniform" Fill="Transparent" Stroke="#E8FFFFFF" StrokeThickness="1.5"
+                      Data="M19.14,12.94a7.96,7.96 0 0 0 .06,-.94 7.96,7.96 0 0 0 -.06,-.94l2.03,-1.58a.5,.5 0 0 0 .12,-.64l-1.92,-3.32a.5,.5 0 0 0 -.61,-.22l-2.39,.96a7.28,7.28 0 0 0 -1.63,-.94l-.36,-2.54a.49,.49 0 0 0 -.5,-.42h-3.84a.49,.49 0 0 0 -.5,.42l-.36,2.54c-.6,.23-1.15,.55-1.63,.94l-2.39,-.96a.5,.5 0 0 0 -.61,.22L2.54,8.84a.5,.5 0 0 0 .12,.64l2.03,1.58a7.96,7.96 0 0 0 -.06,.94 7.96,7.96 0 0 0 .06,.94L2.66,14.52a.5,.5 0 0 0 -.12,.64l1.92,3.32a.5,.5 0 0 0 .61,.22l2.39,-.96c.48,.39 1.03,.71 1.63,.94l.36,2.54c.04,.24,.25,.42,.5,.42h3.84c.25,0 .46,-.18 .5,-.42l.36,-2.54c.6,-.23 1.15,-.55 1.63,-.94l2.39,.96a.5,.5 0 0 0 .61,-.22l1.92,-3.32a.5,.5 0 0 0 -.12,-.64l-2.03,-1.58z"/>
+                  <Ellipse Width="7" Height="7" Stroke="#E8FFFFFF" StrokeThickness="1.5"/>
                 </Grid>
               </Button>
             </StackPanel>
@@ -1050,6 +1689,7 @@ $script:window          = $window
 $script:island          = $window.FindName("Island")
 $script:islandScale     = $window.FindName("IslandScale")
 $script:details         = $window.FindName("Details")
+$script:detailsScale    = $window.FindName("DetailsScale")
 $script:cover           = $window.FindName("Cover")
 $script:note            = $window.FindName("Note")
 $script:titleText       = $window.FindName("TitleText")
@@ -1068,8 +1708,18 @@ $script:settingsButton  = $window.FindName("SettingsButton")
 $script:likeButton      = $window.FindName("LikeButton")
 $script:dislikeButton   = $window.FindName("DislikeButton")
 $script:likeIcon        = $window.FindName("LikeIcon")
+$script:likeIconScale   = $window.FindName("LikeIconScale")
+$script:likeSpark       = $window.FindName("LikeSpark")
+$script:likeSparkScale  = $window.FindName("LikeSparkScale")
+$script:likePulseOuter  = $window.FindName("LikePulseOuter")
+$script:likePulseOuterScale = $window.FindName("LikePulseOuterScale")
+$script:likePulseInner  = $window.FindName("LikePulseInner")
+$script:likePulseInnerScale = $window.FindName("LikePulseInnerScale")
+$script:glassInnerEdge  = $window.FindName("GlassInnerEdge")
+$script:glassSheen      = $window.FindName("GlassSheen")
 $script:dislikeIcon     = $window.FindName("DislikeIcon")
 $script:queueEmpty      = $window.FindName("QueueEmpty")
+$script:queueButtons = @($window.FindName("QueueSong1"), $window.FindName("QueueSong2"), $window.FindName("QueueSong3"))
 $script:queueTitles     = @(
     $window.FindName("QueueTitle1"),
     $window.FindName("QueueTitle2"),
@@ -1098,15 +1748,6 @@ $script:appLabels       = @(
     $window.FindName("AppLabel3"),
     $window.FindName("AppLabel4")
 )
-$script:vizScales       = @(
-    $window.FindName("VizScale1"),
-    $window.FindName("VizScale2"),
-    $window.FindName("VizScale3"),
-    $window.FindName("VizScale4"),
-    $window.FindName("VizScale5"),
-    $window.FindName("VizScale6"),
-    $window.FindName("VizScale7")
-)
 $script:miniVizScales   = @(
     $window.FindName("MiniVizScale1"),
     $window.FindName("MiniVizScale2"),
@@ -1118,9 +1759,6 @@ $script:miniVizScales   = @(
     $window.FindName("MiniVizScale8"),
     $window.FindName("MiniVizScale9")
 )
-$script:miniIdleScales  = [double[]]@(0.28, 0.38, 0.52, 0.68, 0.44, 0.62, 0.48, 0.34, 0.24)
-$script:miniCurrentScales = [double[]]@(0.28, 0.38, 0.52, 0.68, 0.44, 0.62, 0.48, 0.34, 0.24)
-$script:lastMiniVizTime = 0.0
 $script:closeDropWindow = $closeDropWindow
 $script:closeTargetShell = $closeDropWindow.FindName("CloseTargetShell")
 $script:closeTargetScale = $closeDropWindow.FindName("CloseTargetScale")
@@ -1153,11 +1791,12 @@ $collapsedWidth  = 352.0
 $collapsedHeight = 74.0
 $expandedWidth   = 420.0
 $expandedHeight  = 382.0
-$collapsedRadius = 36.0
-$expandedRadius  = 30.0
+$collapsedRadius = 37.0
+$expandedRadius  = 46.0
 
 $script:expanded  = $false
 $script:animating = $false
+$script:likeAnimation = $null
 $script:dragging = $false
 $script:lastCoverKey = ""
 $script:lastCoverTrack = ""
@@ -1209,7 +1848,7 @@ function Start-CloseTargetColorAnimation($brush, [string]$color, [int]$milliseco
 }
 
 function Position-CloseDropTarget {
-    $workArea = [System.Windows.SystemParameters]::WorkArea
+    $workArea = $script:animationDriver.GetWorkArea()
     $script:closeDropWindow.Left = $workArea.Left +
         (($workArea.Width - $script:closeDropWindow.Width) / 2.0)
     $script:closeDropWindow.Top = $workArea.Bottom -
@@ -1311,7 +1950,7 @@ function Get-IslandScreenCenter {
 function Update-CloseDropTarget {
     if (-not $script:dragging -or $script:closeDropClosing) { return }
 
-    $workArea = [System.Windows.SystemParameters]::WorkArea
+    $workArea = $script:animationDriver.GetWorkArea()
     $center = Get-IslandScreenCenter
     $movedDown = $center.Y - $script:dragStartIslandCenterY
     $revealLine = $workArea.Top + ($workArea.Height * 0.42)
@@ -1572,6 +2211,7 @@ function Get-NativeMediaState {
             source   = "windows"
             sourceName = $sourceInfo.name
             sourceKey = $sourceInfo.key
+            audioSource = $sourceInfo.id
             queue    = @()
             liked   = 0
         }
@@ -1633,7 +2273,14 @@ function New-DefaultIslandSettings {
         position = "TopCenter"
         size = "Standard"
         hotkeysEnabled = $true
+        hotkeys = [pscustomobject]@{
+            play = [pscustomobject]@{ modifiers = 3; key = 32 }
+            previous = [pscustomobject]@{ modifiers = 3; key = 37 }
+            next = [pscustomobject]@{ modifiers = 3; key = 39 }
+            toggleIsland = [pscustomobject]@{ modifiers = 3; key = 73 }
+        }
         autostart = $false
+        discordApplicationId = ""
         customLeft = 0.0
         customTop = 0.0
         sources = [pscustomobject]@{
@@ -1658,9 +2305,18 @@ function Load-IslandSettings {
             $apps = @($loaded.apps)
             if ($apps.Count -eq 4) { $settings.apps = $apps }
 
-            foreach ($name in @("position", "size", "hotkeysEnabled", "autostart", "customLeft", "customTop")) {
+            foreach ($name in @("position", "size", "hotkeysEnabled", "autostart", "customLeft", "customTop", "discordApplicationId")) {
                 $property = $loaded.PSObject.Properties[$name]
                 if ($null -ne $property) { $settings.$name = $property.Value }
+            }
+
+            if ($null -ne $loaded.hotkeys) {
+                foreach ($action in @("play", "previous", "next", "toggleIsland")) {
+                    $property = $loaded.hotkeys.PSObject.Properties[$action]
+                    if ($null -ne $property -and $null -ne $property.Value) {
+                        $settings.hotkeys.$action = $property.Value
+                    }
+                }
             }
 
             if ($null -ne $loaded.sources) {
@@ -1699,6 +2355,13 @@ function Set-IslandAutostart([bool]$enabled) {
 function Get-AppIconSource([string]$path) {
     $expandedPath = [Environment]::ExpandEnvironmentVariables($path)
     if (-not $expandedPath -or -not (Test-Path -LiteralPath $expandedPath)) { return $null }
+    if ([IO.Path]::GetExtension($expandedPath) -ieq ".lnk") {
+        try {
+            $shell = New-Object -ComObject WScript.Shell
+            $targetPath = [string]$shell.CreateShortcut($expandedPath).TargetPath
+            if ($targetPath -and (Test-Path -LiteralPath $targetPath)) { $expandedPath = $targetPath }
+        } catch {}
+    }
 
     $icon = $null
     try {
@@ -1744,7 +2407,21 @@ function Open-OrFocusApp([int]$index) {
     }
 
     try {
-        $processName = [IO.Path]::GetFileNameWithoutExtension($path)
+        $launchPath = $path
+        $launchArguments = ""
+        $workingDirectory = [IO.Path]::GetDirectoryName($path)
+        if ([IO.Path]::GetExtension($path) -ieq ".lnk") {
+            try {
+                $shell = New-Object -ComObject WScript.Shell
+                $shortcut = $shell.CreateShortcut($path)
+                if ($shortcut.TargetPath -and (Test-Path -LiteralPath $shortcut.TargetPath)) {
+                    $launchPath = [string]$shortcut.TargetPath
+                    $launchArguments = [string]$shortcut.Arguments
+                    if ($shortcut.WorkingDirectory) { $workingDirectory = [string]$shortcut.WorkingDirectory }
+                }
+            } catch {}
+        }
+        $processName = [IO.Path]::GetFileNameWithoutExtension($launchPath)
         $processIds = @(
             Get-Process -Name $processName -ErrorAction SilentlyContinue |
                 Select-Object -ExpandProperty Id
@@ -1754,23 +2431,43 @@ function Open-OrFocusApp([int]$index) {
             return
         }
 
-        Start-Process -FilePath $path -WorkingDirectory ([IO.Path]::GetDirectoryName($path))
+        if ($launchArguments) {
+            Start-Process -FilePath $launchPath -ArgumentList $launchArguments -WorkingDirectory $workingDirectory
+        } else {
+            Start-Process -FilePath $launchPath -WorkingDirectory $workingDirectory
+        }
         Start-IslandAnimation $false
     } catch {}
 }
 
-function Select-AppExecutable($nameBox, $pathBox) {
+function Select-AppExecutable($nameBox, $pathBox, $iconImage) {
     $dialog = New-Object Microsoft.Win32.OpenFileDialog
-    $dialog.Title = "App fuer die Dynamic Island auswaehlen"
-    $dialog.Filter = "Programme (*.exe)|*.exe"
+    $dialog.Title = "App fuer den Schnellzugriff auswaehlen"
+    $dialog.Filter = "Apps und Verknuepfungen (*.exe;*.lnk)|*.exe;*.lnk|Programme (*.exe)|*.exe|Verknuepfungen (*.lnk)|*.lnk"
     $dialog.CheckFileExists = $true
     $dialog.Multiselect = $false
+    $dialog.RestoreDirectory = $true
     if ($dialog.ShowDialog() -eq $true) {
         $pathBox.Text = $dialog.FileName
-        if ([string]::IsNullOrWhiteSpace($nameBox.Text)) {
-            $nameBox.Text = [IO.Path]::GetFileNameWithoutExtension($dialog.FileName)
-        }
+        $nameBox.Text = [IO.Path]::GetFileNameWithoutExtension($dialog.FileName)
+        if ($null -ne $iconImage) { $iconImage.Source = Get-AppIconSource $dialog.FileName }
     }
+}
+
+function Format-IslandHotkey($hotkey) {
+    $modifiers = [int]$hotkey.modifiers
+    $parts = @()
+    if ($modifiers -band 0x0002) { $parts += "Ctrl" }
+    if ($modifiers -band 0x0001) { $parts += "Alt" }
+    if ($modifiers -band 0x0004) { $parts += "Shift" }
+    if ($modifiers -band 0x0008) { $parts += "Win" }
+    $key = [System.Windows.Input.KeyInterop]::KeyFromVirtualKey([int]$hotkey.key)
+    if ($key -eq [System.Windows.Input.Key]::Space) { $keyName = "Leertaste" }
+    elseif ($key -eq [System.Windows.Input.Key]::Left) { $keyName = "Links" }
+    elseif ($key -eq [System.Windows.Input.Key]::Right) { $keyName = "Rechts" }
+    else { $keyName = $key.ToString() }
+    $parts += $keyName
+    return ($parts -join " + ")
 }
 
 function Show-IslandSettings {
@@ -2055,6 +2752,11 @@ function Show-IslandSettings {
                   <TextBlock Text="Windows-Mediensteuerung" Foreground="#68FFFFFF" FontSize="9.5" Margin="0,3,0,0"/>
                 </StackPanel>
               </CheckBox>
+              <TextBlock Text="Discord Application ID" Foreground="#A8FFFFFF" FontSize="10.5" Margin="0,22,0,7"/>
+              <TextBox x:Name="DiscordApplicationId" Height="34" Padding="10,6"
+                       Style="{StaticResource SettingsTextBoxStyle}"/>
+              <TextBlock Text="Developer Portal → General Information" Foreground="#68FFFFFF"
+                         FontSize="9" Margin="0,5,0,0"/>
             </StackPanel>
 
             <Border Grid.Column="1" Background="#18FFFFFF"/>
@@ -2068,69 +2770,94 @@ function Show-IslandSettings {
               <Border Height="1" Background="#18FFFFFF" Margin="0,20,0,16"/>
               <Grid>
                 <Grid.RowDefinitions>
-                  <RowDefinition Height="28"/>
-                  <RowDefinition Height="28"/>
-                  <RowDefinition Height="28"/>
+                  <RowDefinition Height="34"/>
+                  <RowDefinition Height="34"/>
+                  <RowDefinition Height="34"/>
+                  <RowDefinition Height="34"/>
                 </Grid.RowDefinitions>
                 <Grid.ColumnDefinitions>
-                  <ColumnDefinition Width="132"/>
+                  <ColumnDefinition Width="104"/>
                   <ColumnDefinition Width="*"/>
                 </Grid.ColumnDefinitions>
-                <TextBlock Grid.Row="0" Text="Ctrl + Alt + Leertaste" Foreground="#A8FFFFFF" FontSize="9.5"/>
-                <TextBlock Grid.Row="0" Grid.Column="1" Text="Play / Pause" Foreground="#68FFFFFF" FontSize="9.5"/>
-                <TextBlock Grid.Row="1" Text="Ctrl + Alt + &#8592; / &#8594;" Foreground="#A8FFFFFF" FontSize="9.5"/>
-                <TextBlock Grid.Row="1" Grid.Column="1" Text="Titel wechseln" Foreground="#68FFFFFF" FontSize="9.5"/>
-                <TextBlock Grid.Row="2" Text="Ctrl + Alt + I" Foreground="#A8FFFFFF" FontSize="9.5"/>
-                <TextBlock Grid.Row="2" Grid.Column="1" Text="Island &#246;ffnen" Foreground="#68FFFFFF" FontSize="9.5"/>
+                <TextBlock Grid.Row="0" Text="Play / Pause" Foreground="#A8FFFFFF" FontSize="9.5" VerticalAlignment="Center"/>
+                <Button x:Name="HotkeyPlay" Grid.Row="0" Grid.Column="1" Content="Ctrl + Alt + Leertaste" Style="{StaticResource SettingsButtonStyle}"/>
+                <TextBlock Grid.Row="1" Text="Vorheriger Titel" Foreground="#A8FFFFFF" FontSize="9.5" VerticalAlignment="Center"/>
+                <Button x:Name="HotkeyPrevious" Grid.Row="1" Grid.Column="1" Content="Ctrl + Alt + Links" Style="{StaticResource SettingsButtonStyle}"/>
+                <TextBlock Grid.Row="2" Text="N&#228;chster Titel" Foreground="#A8FFFFFF" FontSize="9.5" VerticalAlignment="Center"/>
+                <Button x:Name="HotkeyNext" Grid.Row="2" Grid.Column="1" Content="Ctrl + Alt + Rechts" Style="{StaticResource SettingsButtonStyle}"/>
+                <TextBlock Grid.Row="3" Text="Island ein / aus" Foreground="#A8FFFFFF" FontSize="9.5" VerticalAlignment="Center"/>
+                <Button x:Name="HotkeyToggle" Grid.Row="3" Grid.Column="1" Content="Ctrl + Alt + I" Style="{StaticResource SettingsButtonStyle}"/>
               </Grid>
             </StackPanel>
           </Grid>
 
           <Grid x:Name="AppsPanel" Margin="24,20,24,16" Visibility="Collapsed">
             <Grid.RowDefinitions>
-              <RowDefinition Height="Auto"/>
+              <RowDefinition Height="42"/>
               <RowDefinition Height="*"/>
             </Grid.RowDefinitions>
-            <TextBlock Grid.Row="0" Text="App-Schnellzugriff" Foreground="#F0FFFFFF"
-                       FontSize="16" FontWeight="SemiBold"/>
-            <Grid Grid.Row="1" Margin="0,16,0,0">
-              <Grid.RowDefinitions>
-                <RowDefinition Height="24"/>
-                <RowDefinition Height="58"/>
-                <RowDefinition Height="58"/>
-                <RowDefinition Height="58"/>
-                <RowDefinition Height="58"/>
-              </Grid.RowDefinitions>
-              <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="28"/>
-                <ColumnDefinition Width="122"/>
-                <ColumnDefinition Width="*"/>
-                <ColumnDefinition Width="74"/>
-              </Grid.ColumnDefinitions>
-
-              <TextBlock Grid.Row="0" Grid.Column="1" Text="Name" Foreground="#58FFFFFF" FontSize="9.5"/>
-              <TextBlock Grid.Row="0" Grid.Column="2" Text="Programmdatei" Foreground="#58FFFFFF" FontSize="9.5"/>
-
-              <TextBlock Grid.Row="1" Grid.Column="0" Text="1" Foreground="#68FFFFFF" VerticalAlignment="Center"/>
-              <TextBox x:Name="Name1" Grid.Row="1" Grid.Column="1" Margin="0,8,8,8" Style="{StaticResource SettingsTextBoxStyle}"/>
-              <TextBox x:Name="Path1" Grid.Row="1" Grid.Column="2" Margin="0,8" Style="{StaticResource SettingsTextBoxStyle}"/>
-              <Button x:Name="Browse1" Grid.Row="1" Grid.Column="3" Margin="8,8,0,8" Content="Datei..." Style="{StaticResource SettingsButtonStyle}"/>
-
-              <TextBlock Grid.Row="2" Grid.Column="0" Text="2" Foreground="#68FFFFFF" VerticalAlignment="Center"/>
-              <TextBox x:Name="Name2" Grid.Row="2" Grid.Column="1" Margin="0,8,8,8" Style="{StaticResource SettingsTextBoxStyle}"/>
-              <TextBox x:Name="Path2" Grid.Row="2" Grid.Column="2" Margin="0,8" Style="{StaticResource SettingsTextBoxStyle}"/>
-              <Button x:Name="Browse2" Grid.Row="2" Grid.Column="3" Margin="8,8,0,8" Content="Datei..." Style="{StaticResource SettingsButtonStyle}"/>
-
-              <TextBlock Grid.Row="3" Grid.Column="0" Text="3" Foreground="#68FFFFFF" VerticalAlignment="Center"/>
-              <TextBox x:Name="Name3" Grid.Row="3" Grid.Column="1" Margin="0,8,8,8" Style="{StaticResource SettingsTextBoxStyle}"/>
-              <TextBox x:Name="Path3" Grid.Row="3" Grid.Column="2" Margin="0,8" Style="{StaticResource SettingsTextBoxStyle}"/>
-              <Button x:Name="Browse3" Grid.Row="3" Grid.Column="3" Margin="8,8,0,8" Content="Datei..." Style="{StaticResource SettingsButtonStyle}"/>
-
-              <TextBlock Grid.Row="4" Grid.Column="0" Text="4" Foreground="#68FFFFFF" VerticalAlignment="Center"/>
-              <TextBox x:Name="Name4" Grid.Row="4" Grid.Column="1" Margin="0,8,8,8" Style="{StaticResource SettingsTextBoxStyle}"/>
-              <TextBox x:Name="Path4" Grid.Row="4" Grid.Column="2" Margin="0,8" Style="{StaticResource SettingsTextBoxStyle}"/>
-              <Button x:Name="Browse4" Grid.Row="4" Grid.Column="3" Margin="8,8,0,8" Content="Datei..." Style="{StaticResource SettingsButtonStyle}"/>
-            </Grid>
+            <StackPanel Grid.Row="0" VerticalAlignment="Center">
+              <TextBlock Text="App-Schnellzugriff" Foreground="#F0FFFFFF" FontSize="16" FontWeight="SemiBold"/>
+              <TextBlock Text="App auswählen, Anzeigename bei Bedarf anpassen." Foreground="#78FFFFFF" FontSize="9.5" Margin="0,4,0,0"/>
+            </StackPanel>
+            <UniformGrid Grid.Row="1" Rows="2" Columns="2" Margin="-4,6,-4,-4">
+              <Border Margin="4" Padding="10" CornerRadius="13" Background="#0CFFFFFF" BorderBrush="#18FFFFFF" BorderThickness="1">
+                <Grid>
+                  <Grid.RowDefinitions><RowDefinition Height="24"/><RowDefinition Height="15"/><RowDefinition Height="32"/><RowDefinition Height="15"/><RowDefinition Height="32"/></Grid.RowDefinitions>
+                  <Grid.ColumnDefinitions><ColumnDefinition Width="28"/><ColumnDefinition Width="*"/><ColumnDefinition Width="80"/><ColumnDefinition Width="28"/></Grid.ColumnDefinitions>
+                  <Image x:Name="SettingsIcon1" Width="20" Height="20" Stretch="Uniform" VerticalAlignment="Center"/>
+                  <TextBlock Grid.Column="1" Text="App 1" Foreground="#C8FFFFFF" FontSize="10" VerticalAlignment="Center"/>
+                  <Button x:Name="Browse1" Grid.Column="2" Content="Auswählen" Style="{StaticResource SettingsButtonStyle}"/>
+                  <Button x:Name="Clear1" Grid.Column="3" Content="×" ToolTip="Slot leeren" Margin="4,0,0,0" Style="{StaticResource SettingsButtonStyle}"/>
+                  <TextBlock Grid.Row="1" Grid.ColumnSpan="4" Text="NAME IM DOCK" Foreground="#70FFFFFF" FontSize="8" VerticalAlignment="Center"/>
+                  <TextBox x:Name="Name1" Grid.Row="2" Grid.ColumnSpan="4" ToolTip="Name, der unter dem App-Icon angezeigt wird" Style="{StaticResource SettingsTextBoxStyle}"/>
+                  <TextBlock Grid.Row="3" Grid.ColumnSpan="4" Text="PROGRAMMDATEI" Foreground="#70FFFFFF" FontSize="8" VerticalAlignment="Center"/>
+                  <TextBox x:Name="Path1" Grid.Row="4" Grid.ColumnSpan="4" IsReadOnly="True" ToolTip="Ausgewählte Programmdatei" Style="{StaticResource SettingsTextBoxStyle}"/>
+                </Grid>
+              </Border>
+              <Border Margin="4" Padding="10" CornerRadius="13" Background="#0CFFFFFF" BorderBrush="#18FFFFFF" BorderThickness="1">
+                <Grid>
+                  <Grid.RowDefinitions><RowDefinition Height="24"/><RowDefinition Height="15"/><RowDefinition Height="32"/><RowDefinition Height="15"/><RowDefinition Height="32"/></Grid.RowDefinitions>
+                  <Grid.ColumnDefinitions><ColumnDefinition Width="28"/><ColumnDefinition Width="*"/><ColumnDefinition Width="80"/><ColumnDefinition Width="28"/></Grid.ColumnDefinitions>
+                  <Image x:Name="SettingsIcon2" Width="20" Height="20" Stretch="Uniform" VerticalAlignment="Center"/>
+                  <TextBlock Grid.Column="1" Text="App 2" Foreground="#C8FFFFFF" FontSize="10" VerticalAlignment="Center"/>
+                  <Button x:Name="Browse2" Grid.Column="2" Content="Auswählen" Style="{StaticResource SettingsButtonStyle}"/>
+                  <Button x:Name="Clear2" Grid.Column="3" Content="×" ToolTip="Slot leeren" Margin="4,0,0,0" Style="{StaticResource SettingsButtonStyle}"/>
+                  <TextBlock Grid.Row="1" Grid.ColumnSpan="4" Text="NAME IM DOCK" Foreground="#70FFFFFF" FontSize="8" VerticalAlignment="Center"/>
+                  <TextBox x:Name="Name2" Grid.Row="2" Grid.ColumnSpan="4" ToolTip="Name, der unter dem App-Icon angezeigt wird" Style="{StaticResource SettingsTextBoxStyle}"/>
+                  <TextBlock Grid.Row="3" Grid.ColumnSpan="4" Text="PROGRAMMDATEI" Foreground="#70FFFFFF" FontSize="8" VerticalAlignment="Center"/>
+                  <TextBox x:Name="Path2" Grid.Row="4" Grid.ColumnSpan="4" IsReadOnly="True" ToolTip="Ausgewählte Programmdatei" Style="{StaticResource SettingsTextBoxStyle}"/>
+                </Grid>
+              </Border>
+              <Border Margin="4" Padding="10" CornerRadius="13" Background="#0CFFFFFF" BorderBrush="#18FFFFFF" BorderThickness="1">
+                <Grid>
+                  <Grid.RowDefinitions><RowDefinition Height="24"/><RowDefinition Height="15"/><RowDefinition Height="32"/><RowDefinition Height="15"/><RowDefinition Height="32"/></Grid.RowDefinitions>
+                  <Grid.ColumnDefinitions><ColumnDefinition Width="28"/><ColumnDefinition Width="*"/><ColumnDefinition Width="80"/><ColumnDefinition Width="28"/></Grid.ColumnDefinitions>
+                  <Image x:Name="SettingsIcon3" Width="20" Height="20" Stretch="Uniform" VerticalAlignment="Center"/>
+                  <TextBlock Grid.Column="1" Text="App 3" Foreground="#C8FFFFFF" FontSize="10" VerticalAlignment="Center"/>
+                  <Button x:Name="Browse3" Grid.Column="2" Content="Auswählen" Style="{StaticResource SettingsButtonStyle}"/>
+                  <Button x:Name="Clear3" Grid.Column="3" Content="×" ToolTip="Slot leeren" Margin="4,0,0,0" Style="{StaticResource SettingsButtonStyle}"/>
+                  <TextBlock Grid.Row="1" Grid.ColumnSpan="4" Text="NAME IM DOCK" Foreground="#70FFFFFF" FontSize="8" VerticalAlignment="Center"/>
+                  <TextBox x:Name="Name3" Grid.Row="2" Grid.ColumnSpan="4" ToolTip="Name, der unter dem App-Icon angezeigt wird" Style="{StaticResource SettingsTextBoxStyle}"/>
+                  <TextBlock Grid.Row="3" Grid.ColumnSpan="4" Text="PROGRAMMDATEI" Foreground="#70FFFFFF" FontSize="8" VerticalAlignment="Center"/>
+                  <TextBox x:Name="Path3" Grid.Row="4" Grid.ColumnSpan="4" IsReadOnly="True" ToolTip="Ausgewählte Programmdatei" Style="{StaticResource SettingsTextBoxStyle}"/>
+                </Grid>
+              </Border>
+              <Border Margin="4" Padding="10" CornerRadius="13" Background="#0CFFFFFF" BorderBrush="#18FFFFFF" BorderThickness="1">
+                <Grid>
+                  <Grid.RowDefinitions><RowDefinition Height="24"/><RowDefinition Height="15"/><RowDefinition Height="32"/><RowDefinition Height="15"/><RowDefinition Height="32"/></Grid.RowDefinitions>
+                  <Grid.ColumnDefinitions><ColumnDefinition Width="28"/><ColumnDefinition Width="*"/><ColumnDefinition Width="80"/><ColumnDefinition Width="28"/></Grid.ColumnDefinitions>
+                  <Image x:Name="SettingsIcon4" Width="20" Height="20" Stretch="Uniform" VerticalAlignment="Center"/>
+                  <TextBlock Grid.Column="1" Text="App 4" Foreground="#C8FFFFFF" FontSize="10" VerticalAlignment="Center"/>
+                  <Button x:Name="Browse4" Grid.Column="2" Content="Auswählen" Style="{StaticResource SettingsButtonStyle}"/>
+                  <Button x:Name="Clear4" Grid.Column="3" Content="×" ToolTip="Slot leeren" Margin="4,0,0,0" Style="{StaticResource SettingsButtonStyle}"/>
+                  <TextBlock Grid.Row="1" Grid.ColumnSpan="4" Text="NAME IM DOCK" Foreground="#70FFFFFF" FontSize="8" VerticalAlignment="Center"/>
+                  <TextBox x:Name="Name4" Grid.Row="2" Grid.ColumnSpan="4" ToolTip="Name, der unter dem App-Icon angezeigt wird" Style="{StaticResource SettingsTextBoxStyle}"/>
+                  <TextBlock Grid.Row="3" Grid.ColumnSpan="4" Text="PROGRAMMDATEI" Foreground="#70FFFFFF" FontSize="8" VerticalAlignment="Center"/>
+                  <TextBox x:Name="Path4" Grid.Row="4" Grid.ColumnSpan="4" IsReadOnly="True" ToolTip="Ausgewählte Programmdatei" Style="{StaticResource SettingsTextBoxStyle}"/>
+                </Grid>
+              </Border>
+            </UniformGrid>
           </Grid>
         </Grid>
 
@@ -2168,11 +2895,23 @@ function Show-IslandSettings {
             $settingsWindow.FindName("Path3"),
             $settingsWindow.FindName("Path4")
         )
+        $settingsAppIcons = @(
+            $settingsWindow.FindName("SettingsIcon1"),
+            $settingsWindow.FindName("SettingsIcon2"),
+            $settingsWindow.FindName("SettingsIcon3"),
+            $settingsWindow.FindName("SettingsIcon4")
+        )
         $browseButtons = @(
             $settingsWindow.FindName("Browse1"),
             $settingsWindow.FindName("Browse2"),
             $settingsWindow.FindName("Browse3"),
             $settingsWindow.FindName("Browse4")
+        )
+        $clearButtons = @(
+            $settingsWindow.FindName("Clear1"),
+            $settingsWindow.FindName("Clear2"),
+            $settingsWindow.FindName("Clear3"),
+            $settingsWindow.FindName("Clear4")
         )
         $statusText = $settingsWindow.FindName("SettingsStatus")
         $appearancePanel = $settingsWindow.FindName("AppearancePanel")
@@ -2198,13 +2937,30 @@ function Show-IslandSettings {
         $sourceYouTube = $settingsWindow.FindName("SourceYouTube")
         $sourceSpotify = $settingsWindow.FindName("SourceSpotify")
         $sourceVlc = $settingsWindow.FindName("SourceVlc")
+        $discordClientIdBox = $settingsWindow.FindName("DiscordApplicationId")
         $hotkeysEnabled = $settingsWindow.FindName("HotkeysEnabled")
         $autostartEnabled = $settingsWindow.FindName("AutostartEnabled")
+        $hotkeyButtons = @{
+            play = $settingsWindow.FindName("HotkeyPlay")
+            previous = $settingsWindow.FindName("HotkeyPrevious")
+            next = $settingsWindow.FindName("HotkeyNext")
+            toggleIsland = $settingsWindow.FindName("HotkeyToggle")
+        }
+        $hotkeyDraft = @{}
+        foreach ($action in @("play", "previous", "next", "toggleIsland")) {
+            $hotkeyDraft[$action] = [pscustomobject]@{
+                modifiers = [int]$script:appSettings.hotkeys.$action.modifiers
+                key = [int]$script:appSettings.hotkeys.$action.key
+            }
+            $hotkeyButtons[$action].Content = Format-IslandHotkey $hotkeyDraft[$action]
+        }
+        $captureState = @{ action = "" }
 
         $apps = @($script:appSettings.apps)
         for ($index = 0; $index -lt 4; $index++) {
             $nameBoxes[$index].Text = [string]$apps[$index].name
             $pathBoxes[$index].Text = [string]$apps[$index].path
+            $settingsAppIcons[$index].Source = Get-AppIconSource ([string]$apps[$index].path)
         }
         $currentPosition = [string]$script:appSettings.position
         if ($currentPosition -eq "Custom") {
@@ -2223,13 +2979,61 @@ function Show-IslandSettings {
         $sourceYouTube.IsChecked = [Convert]::ToBoolean($script:appSettings.sources.youtube)
         $sourceSpotify.IsChecked = [Convert]::ToBoolean($script:appSettings.sources.spotify)
         $sourceVlc.IsChecked = [Convert]::ToBoolean($script:appSettings.sources.vlc)
+        $discordClientIdBox.Text = [string]$script:appSettings.discordApplicationId
         $hotkeysEnabled.IsChecked = [Convert]::ToBoolean($script:appSettings.hotkeysEnabled)
         $autostartEnabled.IsChecked = [Convert]::ToBoolean($script:appSettings.autostart)
 
-        $browseButtons[0].Add_Click({ Select-AppExecutable $nameBoxes[0] $pathBoxes[0] })
-        $browseButtons[1].Add_Click({ Select-AppExecutable $nameBoxes[1] $pathBoxes[1] })
-        $browseButtons[2].Add_Click({ Select-AppExecutable $nameBoxes[2] $pathBoxes[2] })
-        $browseButtons[3].Add_Click({ Select-AppExecutable $nameBoxes[3] $pathBoxes[3] })
+        foreach ($action in @("play", "previous", "next", "toggleIsland")) {
+            $selectedAction = $action
+            $hotkeyButtons[$action].Add_Click({
+                $captureState.action = $selectedAction
+                $hotkeyButtons[$selectedAction].Content = "Tastenkombination druecken..."
+                $settingsWindow.Activate()
+                $settingsWindow.Focus() | Out-Null
+            }.GetNewClosure())
+        }
+        $settingsWindow.Add_PreviewKeyDown({
+            param($sender, $eventArgs)
+            if (-not $captureState.action) { return }
+            $eventArgs.Handled = $true
+            $key = $eventArgs.Key
+            if ($key -eq [System.Windows.Input.Key]::System) { $key = $eventArgs.SystemKey }
+            if ($key -eq [System.Windows.Input.Key]::Escape) {
+                $captureState.action = ""
+                foreach ($action in @("play", "previous", "next", "toggleIsland")) {
+                    $hotkeyButtons[$action].Content = Format-IslandHotkey $hotkeyDraft[$action]
+                }
+                return
+            }
+            if ($key -in @([System.Windows.Input.Key]::LeftCtrl, [System.Windows.Input.Key]::RightCtrl,
+                           [System.Windows.Input.Key]::LeftAlt, [System.Windows.Input.Key]::RightAlt,
+                           [System.Windows.Input.Key]::LeftShift, [System.Windows.Input.Key]::RightShift,
+                           [System.Windows.Input.Key]::LWin, [System.Windows.Input.Key]::RWin)) { return }
+            $modifiers = [int][System.Windows.Input.Keyboard]::Modifiers
+            if (($modifiers -band 0x000B) -eq 0) {
+                $hotkeyButtons[$captureState.action].Content = "Ctrl/Alt/Win + Taste"
+                return
+            }
+            $virtualKey = [System.Windows.Input.KeyInterop]::VirtualKeyFromKey($key)
+            if ($virtualKey -le 0) { return }
+            $action = $captureState.action
+            $hotkeyDraft[$action] = [pscustomobject]@{ modifiers = $modifiers; key = [int]$virtualKey }
+            $hotkeyButtons[$action].Content = Format-IslandHotkey $hotkeyDraft[$action]
+            $captureState.action = ""
+        }.GetNewClosure())
+
+        $browseButtons[0].Add_Click({ Select-AppExecutable $nameBoxes[0] $pathBoxes[0] $settingsAppIcons[0] })
+        $browseButtons[1].Add_Click({ Select-AppExecutable $nameBoxes[1] $pathBoxes[1] $settingsAppIcons[1] })
+        $browseButtons[2].Add_Click({ Select-AppExecutable $nameBoxes[2] $pathBoxes[2] $settingsAppIcons[2] })
+        $browseButtons[3].Add_Click({ Select-AppExecutable $nameBoxes[3] $pathBoxes[3] $settingsAppIcons[3] })
+        for ($index = 0; $index -lt 4; $index++) {
+            $slotIndex = $index
+            $clearButtons[$slotIndex].Add_Click({
+                $nameBoxes[$slotIndex].Clear()
+                $pathBoxes[$slotIndex].Clear()
+                $settingsAppIcons[$slotIndex].Source = $null
+            }.GetNewClosure())
+        }
 
         $tabAppearance.Add_Checked({
             $appearancePanel.Visibility = [System.Windows.Visibility]::Visible
@@ -2272,6 +3076,27 @@ function Show-IslandSettings {
                 return
             }
 
+            $hotkeySignatures = @{}
+            foreach ($action in @("play", "previous", "next", "toggleIsland")) {
+                $hotkey = $hotkeyDraft[$action]
+                if (($hotkey.modifiers -band 0x000B) -eq 0 -or $hotkey.key -le 0) {
+                    $statusText.Text = "Jeder Hotkey braucht Strg, Alt oder Win und eine Taste."
+                    return
+                }
+                $signature = "$($hotkey.modifiers):$($hotkey.key)"
+                if ($hotkeySignatures.ContainsKey($signature)) {
+                    $statusText.Text = "Jede Aktion braucht eine eigene Tastenkombination."
+                    return
+                }
+                $hotkeySignatures[$signature] = $action
+            }
+
+            $discordClientId = $discordClientIdBox.Text.Trim()
+            if ($discordClientId -and $discordClientId -notmatch '^\d{17,20}$') {
+                $statusText.Text = "Die Discord Application ID muss aus 17 bis 20 Ziffern bestehen."
+                return
+            }
+
             $selectedPosition = [string]$script:appSettings.position
             $selectedEdge = $null
             foreach ($choice in $edgeChoices) {
@@ -2296,7 +3121,14 @@ function Show-IslandSettings {
                 position = $selectedPosition
                 size = $selectedSize
                 hotkeysEnabled = [bool]$hotkeysEnabled.IsChecked
+                hotkeys = [pscustomobject]@{
+                    play = $hotkeyDraft.play
+                    previous = $hotkeyDraft.previous
+                    next = $hotkeyDraft.next
+                    toggleIsland = $hotkeyDraft.toggleIsland
+                }
                 autostart = [bool]$autostartEnabled.IsChecked
+                discordApplicationId = $discordClientId
                 customLeft = [double]$script:appSettings.customLeft
                 customTop = [double]$script:appSettings.customTop
                 sources = [pscustomobject]@{
@@ -2310,6 +3142,7 @@ function Show-IslandSettings {
             try {
                 Set-IslandAutostart ([bool]$script:appSettings.autostart)
                 Save-IslandSettings
+                $script:discordPresence.SetApplicationId([string]$script:appSettings.discordApplicationId)
                 Refresh-AppDock
                 Apply-IslandProfile
                 Register-IslandHotkeys
@@ -2326,11 +3159,17 @@ function Show-IslandSettings {
 }
 
 $script:appSettings = Load-IslandSettings
+$script:discordPresence = [DiscordPresenceClient]::new([string]$script:appSettings.discordApplicationId)
 Refresh-AppDock
 
 $script:anim  = $null
 $script:watch = New-Object System.Diagnostics.Stopwatch
 $script:watch.Start()
+$script:animationDriver = [IslandAnimationDriver]::new(
+    $window, $script:island, $window.FindName("IslandJelly"),
+    $script:details, $script:progressFill, $script:currentText,
+    [System.Windows.Media.ScaleTransform[]]$script:miniVizScales
+)
 
 function Position-IslandWindow {
     $workArea = [System.Windows.SystemParameters]::WorkArea
@@ -2420,17 +3259,18 @@ function Register-IslandHotkeys {
     }
 
     $definitions = @(
-        @{ id = 101; key = 0x20 }, # Ctrl+Alt+Space
-        @{ id = 102; key = 0x25 }, # Ctrl+Alt+Left
-        @{ id = 103; key = 0x27 }, # Ctrl+Alt+Right
-        @{ id = 104; key = 0x49 }  # Ctrl+Alt+I
+        @{ id = 101; action = "play" },
+        @{ id = 102; action = "previous" },
+        @{ id = 103; action = "next" },
+        @{ id = 104; action = "toggleIsland" }
     )
     foreach ($definition in $definitions) {
+        $hotkey = $script:appSettings.hotkeys.($definition.action)
         if ([IslandSystemBridge]::RegisterHotKey(
                 $script:hwndSource.Handle,
                 [int]$definition.id,
-                0x0003,
-                [uint32]$definition.key
+                [uint32]$hotkey.modifiers,
+                [uint32]$hotkey.key
             )) {
             $script:registeredHotkeyIds += [int]$definition.id
         }
@@ -2447,14 +3287,31 @@ function Ease-Cubic([double]$t) {
     return 1.0 - [Math]::Pow(1.0 - $x, 3.0)
 }
 
+function Start-LikeAnimation {
+    $script:likeAnimation = [pscustomobject]@{
+        start = $script:watch.Elapsed.TotalMilliseconds
+        duration = 680.0
+    }
+    $script:likeIcon.Stroke = $script:ratingLikeBrush
+    $script:animationDriver.ScriptFrames = $true
+}
+
 function Start-IslandAnimation([bool]$open) {
     if ($script:animating -and $script:anim -and $script:anim.open -eq $open) { return }
     if (-not $script:animating -and $script:expanded -eq $open) { return }
 
+    $wasExpanded = [bool]$script:expanded
+    $wasAnimating = [bool]$script:animating
     $script:expanded  = $open
     $script:animating = $true
     if ($open) {
         $script:details.Visibility = [System.Windows.Visibility]::Visible
+        if (-not $wasExpanded -and -not $wasAnimating) {
+            $script:islandScale.ScaleX = 0.95
+            $script:islandScale.ScaleY = 0.90
+            $script:island.Opacity = 0.94
+            $script:detailsScale.ScaleY = 0.90
+        }
     } else {
         $script:details.IsHitTestVisible = $false
     }
@@ -2462,14 +3319,22 @@ function Start-IslandAnimation([bool]$open) {
     $targetW = if ($open) { $expandedWidth }  else { $collapsedWidth }
     $targetH = if ($open) { $expandedHeight } else { $collapsedHeight }
     $targetR = if ($open) { $expandedRadius }  else { $collapsedRadius }
+    $sizeTravel = [Math]::Max(
+        [Math]::Abs($targetW - [double]$script:island.Width) / [Math]::Max(1.0, [Math]::Abs($expandedWidth - $collapsedWidth)),
+        [Math]::Abs($targetH - [double]$script:island.Height) / [Math]::Max(1.0, [Math]::Abs($expandedHeight - $collapsedHeight))
+    )
+    $baseDuration = if ($open) { 560.0 } else { 460.0 }
 
     $script:anim = [pscustomobject]@{
         open      = $open
         start     = $script:watch.Elapsed.TotalMilliseconds
-        duration  = if ($open) { 280.0 } else { 230.0 }
+        duration  = [Math]::Max(220.0, $baseDuration * [Math]::Min(1.0, $sizeTravel))
         w0        = [double]$script:island.Width
         h0        = [double]$script:island.Height
         r0        = [double]$script:island.CornerRadius.TopLeft
+        sx0       = [double]$script:islandScale.ScaleX
+        sy0       = [double]$script:islandScale.ScaleY
+        opacity0  = [double]$script:island.Opacity
         c0        = [double]$script:chevronRotate.Angle
         w1        = $targetW
         h1        = $targetH
@@ -2477,7 +3342,10 @@ function Start-IslandAnimation([bool]$open) {
         c1        = if ($open) { 180.0 } else { 0.0 }
         o0        = [double]$script:details.Opacity
         o1        = if ($open) { 1.0 } else { 0.0 }
+        ds0       = [double]$script:detailsScale.ScaleY
+        ds1       = if ($open) { 1.0 } else { 0.94 }
     }
+    $script:animationDriver.ScriptFrames = $true
 }
 
 function Format-Time($seconds) {
@@ -2504,13 +3372,10 @@ function Get-CoverIdentity([string]$url) {
     }
 }
 
-# ---- per-frame composition render loop (runs at display refresh, incl. 180Hz) ----
+# PowerShell participates only during the short expand/collapse/like animations.
+# Continuous visualizers, drag and spring settling stay in the compiled driver.
 $renderHandler = [System.EventHandler]{
     param($sender, $e)
-
-    if ($script:dragging) {
-        Update-CloseDropTarget
-    }
 
     # 1. morph animation
     $a = $script:anim
@@ -2525,102 +3390,98 @@ $renderHandler = [System.EventHandler]{
 
         $radius = $a.r0 + ($a.r1 - $a.r0) * $eMorph
         $script:island.CornerRadius = [System.Windows.CornerRadius]::new($radius)
+        $script:glassInnerEdge.CornerRadius = [System.Windows.CornerRadius]::new([Math]::Max(0.0, $radius - 1.0))
+        $script:glassSheen.CornerRadius = [System.Windows.CornerRadius]::new($radius)
+        $settlePulse = [Math]::Sin([Math]::PI * $t) * (1.0 - $t)
+        if ($a.open) {
+            $script:islandScale.ScaleX = $a.sx0 + ((1.0 - $a.sx0) * $eMorph) + (0.12 * $settlePulse)
+            $script:islandScale.ScaleY = $a.sy0 + ((1.0 - $a.sy0) * $eMorph) + (0.15 * $settlePulse)
+        } else {
+            $script:islandScale.ScaleX = $a.sx0 + ((1.0 - $a.sx0) * $eMorph) + (0.07 * $settlePulse)
+            $script:islandScale.ScaleY = $a.sy0 + ((1.0 - $a.sy0) * $eMorph) + (0.10 * $settlePulse)
+        }
+        $script:island.Opacity = $a.opacity0 + ((1.0 - $a.opacity0) * $eMorph)
         $script:chevronRotate.Angle = $a.c0 + ($a.c1 - $a.c0) * $eMorph
 
         # opacity with stagger: details fade out FIRST on collapse, fade in LAST on expand
         if ($a.open) {
-            $ot = [Math]::Max(0.0, ($t - 0.42) / 0.58)
+            $ot = [Math]::Max(0.0, ($t - 0.26) / 0.66)
         } else {
-            $ot = [Math]::Min(1.0, $t / 0.42)
+            $ot = [Math]::Min(1.0, [Math]::Max(0.0, ($t - 0.16) / 0.56))
         }
         $oe = Ease-Cubic $ot
         $newOpacity = $a.o0 + ($a.o1 - $a.o0) * $oe
         $script:details.Opacity = $newOpacity
+        $script:detailsScale.ScaleY = $a.ds0 + (($a.ds1 - $a.ds0) * $oe)
         $script:details.IsHitTestVisible = ($newOpacity -gt 0.6)
 
         if ($finished) {
             $script:island.Width = $a.w1
             $script:island.Height = $a.h1
             $script:island.CornerRadius = [System.Windows.CornerRadius]::new($a.r1)
+            $script:glassInnerEdge.CornerRadius = [System.Windows.CornerRadius]::new([Math]::Max(0.0, $a.r1 - 1.0))
+            $script:glassSheen.CornerRadius = [System.Windows.CornerRadius]::new($a.r1)
             $script:chevronRotate.Angle = $a.c1
+            $script:islandScale.ScaleX = 1.0
+            $script:islandScale.ScaleY = 1.0
+            $script:island.Opacity = 1.0
             $script:details.Opacity = $a.o1
+            $script:detailsScale.ScaleY = $a.ds1
             $script:details.IsHitTestVisible = $a.open
             if (-not $a.open) {
                 $script:details.Visibility = [System.Windows.Visibility]::Collapsed
             }
             $script:anim = $null
             $script:animating = $false
-            $script:islandScale.ScaleX = 1.0
-            $script:islandScale.ScaleY = 1.0
         }
     }
 
-    # 2. compact visualizer always runs at the display composition rate.
-    $st = $script:lastState
-    $miniVisualizerPlaying = (
-        $st -and $st.Count -gt 0 -and [Convert]::ToBoolean($st["playing"])
-    )
-    $miniVisualizerTime = $script:watch.Elapsed.TotalSeconds
-    $miniDeltaTime = if ($script:lastMiniVizTime -gt 0) {
-        [Math]::Min(0.05, $miniVisualizerTime - $script:lastMiniVizTime)
-    } else {
-        0.016
-    }
-    $script:lastMiniVizTime = $miniVisualizerTime
-    $miniSmoothing = 1.0 - [Math]::Exp(
-        -$miniDeltaTime * $(if ($miniVisualizerPlaying) { 12.0 } else { 7.0 })
-    )
-    for ($bar = 0; $bar -lt $script:miniVizScales.Count; $bar++) {
-        $targetScale = $script:miniIdleScales[$bar]
-        if ($miniVisualizerPlaying) {
-            $waveA = [Math]::Abs([Math]::Sin(($miniVisualizerTime * 3.25) + ($bar * 0.83)))
-            $waveB = [Math]::Abs([Math]::Sin(($miniVisualizerTime * 1.75) - ($bar * 1.19)))
-            $energy = (0.62 * $waveA) + (0.38 * $waveB)
-            $targetScale = 0.14 + (0.86 * [Math]::Pow($energy, 1.28))
+    # Like feedback: a springy thumb pop, two expanding rings, and a brief sparkle.
+    $likeAnim = $script:likeAnimation
+    if ($null -ne $likeAnim) {
+        $likeT = [Math]::Max(0.0, [Math]::Min(1.0,
+            ($script:watch.Elapsed.TotalMilliseconds - $likeAnim.start) / $likeAnim.duration
+        ))
+        if ($likeT -ge 1.0) {
+            $script:likeIconScale.ScaleX = 1.0
+            $script:likeIconScale.ScaleY = 1.0
+            $script:likePulseOuterScale.ScaleX = 1.0
+            $script:likePulseOuterScale.ScaleY = 1.0
+            $script:likePulseInnerScale.ScaleX = 1.0
+            $script:likePulseInnerScale.ScaleY = 1.0
+            $script:likeSparkScale.ScaleX = 1.0
+            $script:likeSparkScale.ScaleY = 1.0
+            $script:likePulseOuter.Opacity = 0.0
+            $script:likePulseInner.Opacity = 0.0
+            $script:likeSpark.Opacity = 0.0
+            $script:likeAnimation = $null
+        } else {
+            $thumbScale = 1.0 + (0.40 * [Math]::Exp(-6.5 * $likeT) * [Math]::Sin(18.0 * $likeT))
+            $script:likeIconScale.ScaleX = $thumbScale
+            $script:likeIconScale.ScaleY = $thumbScale
+
+            $outerT = [Math]::Min(1.0, $likeT / 0.62)
+            $script:likePulseOuterScale.ScaleX = 0.38 + (1.02 * $outerT)
+            $script:likePulseOuterScale.ScaleY = 0.38 + (1.02 * $outerT)
+            $script:likePulseOuter.Opacity = 0.72 * (1.0 - $outerT)
+
+            $innerT = [Math]::Max(0.0, [Math]::Min(1.0, ($likeT - 0.08) / 0.52))
+            $script:likePulseInnerScale.ScaleX = 0.38 + (1.08 * $innerT)
+            $script:likePulseInnerScale.ScaleY = 0.38 + (1.08 * $innerT)
+            $script:likePulseInner.Opacity = 0.82 * (1.0 - $innerT)
+
+            $sparkT = [Math]::Min(1.0, $likeT / 0.52)
+            $sparkScale = 0.45 + (0.90 * $sparkT)
+            $script:likeSparkScale.ScaleX = $sparkScale
+            $script:likeSparkScale.ScaleY = $sparkScale
+            $script:likeSpark.Opacity = 0.82 * [Math]::Sin([Math]::PI * $sparkT)
         }
-        $script:miniCurrentScales[$bar] += (
-            $targetScale - $script:miniCurrentScales[$bar]
-        ) * $miniSmoothing
-        $script:miniVizScales[$bar].ScaleY = $script:miniCurrentScales[$bar]
     }
 
-    # 3. expanded progress interpolation and visualizer.
-    if ($script:details.Visibility -eq [System.Windows.Visibility]::Visible -and
-        $script:details.Opacity -gt 0.01 -and
-        $st -and $st.Count -gt 0) {
-        $dur2    = [double]$st["duration"]
-        if ($dur2 -gt 0) {
-            $cur = [double]$st["current"]
-            $at  = [double]$st["at"]
-            $playing2 = [Convert]::ToBoolean($st["playing"])
-            if ($playing2 -and $at -gt 0) {
-                $elapsed = ([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() - $at) / 1000.0
-                $cur = [Math]::Min($dur2, $cur + $elapsed)
-            }
-            $displaySecond = [int][Math]::Floor($cur)
-            if ($displaySecond -ne $script:lastDisplayedSecond) {
-                $currentText.Text = Format-Time $displaySecond
-                $script:lastDisplayedSecond = $displaySecond
-            }
-            $available = [Math]::Max(0.0, [double]$script:details.ActualWidth)
-            $script:progressFill.Width = [Math]::Min($available, $available * ($cur / $dur2))
-        }
-
-        $visualizerPlaying = [Convert]::ToBoolean($st["playing"])
-        $visualizerTime = $script:watch.Elapsed.TotalSeconds
-        for ($bar = 0; $bar -lt $script:vizScales.Count; $bar++) {
-            $scale = 0.18
-            if ($visualizerPlaying) {
-                $wave = [Math]::Abs([Math]::Sin(
-                    ($visualizerTime * (4.8 + ($bar * 0.34))) + ($bar * 1.37)
-                ))
-                $scale = 0.22 + (0.78 * [Math]::Pow($wave, 1.35))
-            }
-            $script:vizScales[$bar].ScaleY = $scale
-        }
-    }
+    $script:animationDriver.ScriptFrames = ($null -ne $script:anim -or $null -ne $script:likeAnimation)
 }
-[System.Windows.Media.CompositionTarget]::add_Rendering($renderHandler)
+$script:animationDriver.add_ScriptFrame($renderHandler)
+$script:animationDriver.add_DragMoved([System.EventHandler]{ Update-CloseDropTarget })
 
 $window.Add_SourceInitialized({
     $helper = New-Object System.Windows.Interop.WindowInteropHelper($window)
@@ -2707,9 +3568,35 @@ function Test-IsButtonSource($source) {
     return $false
 }
 
-$window.Add_LocationChanged({
-    if ($script:dragging) {
-        Update-CloseDropTarget
+$script:animationDriver.add_DragEnded([System.EventHandler]{
+    $closeRequested = $script:closeDropArmed -and -not $script:animationDriver.DragCancelled
+    $script:dragging = $false
+    if ($closeRequested) {
+        Invoke-CloseDropAnimation
+    } else {
+        Set-CloseDropTargetVisible $false
+        if (-not $script:animationDriver.DragCancelled -and $script:animationDriver.DragHasMoved) {
+            $workArea = $script:animationDriver.GetWorkArea()
+            $window.Left = [Math]::Max(
+                $workArea.Left,
+                [Math]::Min($window.Left, $workArea.Right - $window.Width)
+            )
+            $window.Top = [Math]::Max(
+                $workArea.Top,
+                [Math]::Min($window.Top, $workArea.Bottom - $window.Height)
+            )
+            # Preserve the visible location when a bottom-anchored island becomes custom.
+            if ($script:island.VerticalAlignment -eq [System.Windows.VerticalAlignment]::Bottom) {
+                $window.Top += $window.ActualHeight - $script:island.ActualHeight - 16.0
+            }
+            $script:island.VerticalAlignment = [System.Windows.VerticalAlignment]::Top
+            $script:island.Margin = [System.Windows.Thickness]::new(0, 8, 0, 0)
+            $script:appSettings.position = "Custom"
+            $script:appSettings.customLeft = [double]$window.Left
+            $script:appSettings.customTop = [double]$window.Top
+            Save-IslandSettings
+        }
+        if (-not $StartExpanded) { $leaveTimer.Start() }
     }
 })
 
@@ -2723,36 +3610,8 @@ $island.Add_PreviewMouseLeftButtonDown({
     Set-CloseDropTargetArmed $false
     Set-CloseDropTargetVisible $false
     $script:dragStartIslandCenterY = (Get-IslandScreenCenter).Y
-    $script:dragging = $true
-    try {
-        $window.DragMove()
-        $eventArgs.Handled = $true
-    } catch {
-        [Console]::Error.WriteLine("Island drag failed: " + $_.Exception.Message)
-    } finally {
-        $closeRequested = $script:closeDropArmed
-        $script:dragging = $false
-        if ($closeRequested) {
-            Invoke-CloseDropAnimation
-        } else {
-            Set-CloseDropTargetVisible $false
-            $workArea = [System.Windows.SystemParameters]::WorkArea
-            $window.Left = [Math]::Max(
-                $workArea.Left,
-                [Math]::Min($window.Left, $workArea.Right - $window.Width)
-            )
-            $window.Top = [Math]::Max(
-                $workArea.Top,
-                [Math]::Min($window.Top, $workArea.Bottom - $window.Height)
-            )
-            $script:appSettings.position = "Custom"
-            $script:appSettings.customLeft = [double]$window.Left
-            $script:appSettings.customTop = [double]$window.Top
-            $script:island.VerticalAlignment = [System.Windows.VerticalAlignment]::Top
-            $script:island.Margin = [System.Windows.Thickness]::new(0, 8, 0, 0)
-            Save-IslandSettings
-        }
-    }
+    $script:dragging = $script:animationDriver.BeginDrag()
+    $eventArgs.Handled = $script:dragging
 })
 
 $island.Add_PreviewMouseWheel({
@@ -2768,10 +3627,19 @@ $island.Add_PreviewMouseWheel({
     $eventArgs.Handled = $true
 })
 
+foreach ($queueButton in $script:queueButtons) {
+    $queueButton.Add_Click({
+        param($sender, $eventArgs)
+        if ($sender.IsEnabled -and $sender.Tag) {
+            [void][IslandBridge]::EnqueueQueue([string]$sender.Tag)
+            $eventArgs.Handled = $true
+        }
+    })
+}
 $mainPlay.Add_Click({ Send-MediaAction "play" })
 $previousButton.Add_Click({ Send-MediaAction "prev" })
 $nextButton.Add_Click({ Send-MediaAction "next" })
-$script:likeButton.Add_Click({ Send-MediaAction "like" })
+$script:likeButton.Add_Click({ Start-LikeAnimation; Send-MediaAction "like" })
 $script:dislikeButton.Add_Click({ Send-MediaAction "dislike" })
 $script:appButtons[0].Add_Click({ Open-OrFocusApp 0 })
 $script:appButtons[1].Add_Click({ Open-OrFocusApp 1 })
@@ -2784,7 +3652,7 @@ $settingsButton.Add_Click({ Show-IslandSettings })
 $refresh = New-Object System.Windows.Threading.DispatcherTimer
 $refresh.Interval = [TimeSpan]::FromMilliseconds(700)
 $refresh.Add_Tick({
-    if ($script:animating -or $script:dragging) { return }
+    if ($script:animating -or $script:dragging -or $script:animationDriver.IsJellyActive) { return }
 
     $bridgeState = [IslandBridge]::Snapshot()
     $nativeState = Get-NativeMediaState
@@ -2816,12 +3684,43 @@ $refresh.Add_Tick({
                 $nativeState["cover"] = $bridgeCover
             }
             $nativeState["queue"] = $bridgeState["queue"]
+            $nativeState["queueSelection"] = $bridgeState["queueSelection"]
             $nativeState["liked"] = $bridgeState["liked"]
         }
         $state = $nativeState
     }
 
     $script:lastState = $state
+    $audioSource = if ($state["audioSource"]) { [string]$state["audioSource"] } else { [string]$state["sourceKey"] }
+    $script:animationDriver.SetAudioSource($audioSource)
+    $script:animationDriver.UpdateMedia(
+        [Convert]::ToBoolean($state["playing"]), [double]$state["current"],
+        [double]$state["duration"], [double]$state["at"]
+    )
+
+    $sourceName = [string]$state["sourceName"]
+    $sourceKey = [string]$state["sourceKey"]
+    if ([string]::IsNullOrWhiteSpace($sourceName)) {
+        $sourceName = switch ($sourceKey) {
+            "spotify" { "Spotify"; break }
+            "vlc" { "VLC"; break }
+            default { "YouTube Music" }
+        }
+    }
+    if ([string]::IsNullOrWhiteSpace($sourceKey)) { $sourceKey = "youtube" }
+
+    if (-not [string]::IsNullOrWhiteSpace([string]$state["title"])) {
+        $script:discordPresence.Update(
+            [string]$state["title"],
+            [string]$state["artist"],
+            $sourceName,
+            [Convert]::ToBoolean($state["playing"]),
+            [double]$state["duration"],
+            [double]$state["current"]
+        )
+    } else {
+        $script:discordPresence.Clear()
+    }
 
     $titleText.Text  = [string]$state["title"]
     $artistText.Text = [string]$state["artist"]
@@ -2841,10 +3740,6 @@ $refresh.Add_Tick({
 
     $nativeLive = ([string]$state["source"]) -eq "windows"
     $bridgeLive = ($bridgeAge -lt 15000)
-    $sourceName = [string]$state["sourceName"]
-    if ([string]::IsNullOrWhiteSpace($sourceName)) { $sourceName = "YouTube Music" }
-    $sourceKey = [string]$state["sourceKey"]
-    if ([string]::IsNullOrWhiteSpace($sourceKey)) { $sourceKey = "youtube" }
     $script:activeMediaSource = $sourceKey
 
     $nowMilliseconds = [double][DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
@@ -2865,11 +3760,22 @@ $refresh.Add_Tick({
 
     $queueItems = @($state["queue"])
     for ($queueIndex = 0; $queueIndex -lt 3; $queueIndex++) {
+        $songButton = $script:queueButtons[$queueIndex]
         if ($queueIndex -lt $queueItems.Count -and $null -ne $queueItems[$queueIndex]) {
             $queueItem = $queueItems[$queueIndex]
             $script:queueTitles[$queueIndex].Text = [string]$queueItem["title"]
             $script:queueArtists[$queueIndex].Text = [string]$queueItem["artist"]
+            $queueToken = [string]$queueItem["queueToken"]
+            $canSelectSong = ($browserFeaturesLive -and [Convert]::ToBoolean($state["queueSelection"]) -and
+                $queueToken -cmatch '^[a-f0-9]{16}:[1-9][0-9]{0,8}$')
+            # Hover belongs to the visible song; only playback needs a current bridge token.
+            $songButton.IsEnabled = -not [string]::IsNullOrWhiteSpace([string]$queueItem["title"])
+            $songButton.Tag = if ($canSelectSong) { $queueToken } else { $null }
+            $songButton.Cursor = if ($canSelectSong) { [System.Windows.Input.Cursors]::Hand } else { [System.Windows.Input.Cursors]::Arrow }
+            $songButton.ToolTip = if ($canSelectSong) { "Song abspielen" } else { "YouTube Music und die Bridge-Erweiterung neu laden" }
         } else {
+            $songButton.Tag = $null
+            $songButton.IsEnabled = $false
             $script:queueTitles[$queueIndex].Text = ""
             $script:queueArtists[$queueIndex].Text = ""
         }
@@ -2933,11 +3839,13 @@ $refresh.Start()
 $window.Add_Closed({
     $refresh.Stop()
     Unregister-IslandHotkeys
-    [System.Windows.Media.CompositionTarget]::remove_Rendering($renderHandler)
+    $leaveTimer.Stop()
+    $script:animationDriver.Dispose()
     if ($null -ne $script:hwndSource -and $null -ne $script:hitTestHook) {
         $script:hwndSource.RemoveHook($script:hitTestHook)
     }
     [IslandBridge]::Stop()
+    $script:discordPresence.Dispose()
     try { $script:closeDropWindow.Close() } catch {}
 })
 
