@@ -1333,7 +1333,11 @@ public sealed class IslandAnimationDriver : IDisposable
 
             <Border x:Name="CoverBorder" Grid.Column="0" Width="50" Height="50"
                     CornerRadius="15" Background="#12FFFFFF"
-                    BorderBrush="#1EFFFFFF" BorderThickness="1">
+                    BorderBrush="#1EFFFFFF" BorderThickness="1"
+                    RenderTransformOrigin="0.5,0.5">
+              <Border.RenderTransform>
+                <TranslateTransform x:Name="CoverTrackOffset"/>
+              </Border.RenderTransform>
               <Grid>
                 <TextBlock x:Name="Note" Text="&#9835;"
                            FontSize="20" Foreground="#A8FFFFFF"
@@ -1347,7 +1351,11 @@ public sealed class IslandAnimationDriver : IDisposable
               </Grid>
             </Border>
 
-            <StackPanel Grid.Column="2" VerticalAlignment="Center">
+            <StackPanel x:Name="TrackMetadata" Grid.Column="2" VerticalAlignment="Center"
+                        RenderTransformOrigin="0.5,0.5">
+              <StackPanel.RenderTransform>
+                <TranslateTransform x:Name="MetadataTrackOffset"/>
+              </StackPanel.RenderTransform>
               <TextBlock x:Name="TitleText" Text="YouTube Music" Foreground="#F8FFFFFF"
                          FontSize="13.5" FontWeight="SemiBold"
                          TextTrimming="CharacterEllipsis"/>
@@ -1704,6 +1712,10 @@ $script:likeIcon        = $window.FindName("LikeIcon")
 $script:likeIconScale   = $window.FindName("LikeIconScale")
 $script:likeSpark       = $window.FindName("LikeSpark")
 $script:likeSparkScale  = $window.FindName("LikeSparkScale")
+$script:coverBorder     = $window.FindName("CoverBorder")
+$script:coverTrackOffset = $window.FindName("CoverTrackOffset")
+$script:trackMetadata   = $window.FindName("TrackMetadata")
+$script:metadataTrackOffset = $window.FindName("MetadataTrackOffset")
 $script:likePulseOuter  = $window.FindName("LikePulseOuter")
 $script:likePulseOuterScale = $window.FindName("LikePulseOuterScale")
 $script:likePulseInner  = $window.FindName("LikePulseInner")
@@ -1748,6 +1760,37 @@ $script:miniVizScales   = @(
     $window.FindName("MiniVizScale6"),
     $window.FindName("MiniVizScale7")
 )
+
+function Start-TrackTransition([int]$direction) {
+    if ($direction -ne -1) { $direction = 1 }
+    $duration = [TimeSpan]::FromMilliseconds(190)
+    $ease = [System.Windows.Media.Animation.CubicEase]::new()
+    $ease.EasingMode = [System.Windows.Media.Animation.EasingMode]::EaseOut
+
+    foreach ($item in @(
+        @{ element = $script:coverBorder; offset = $script:coverTrackOffset },
+        @{ element = $script:trackMetadata; offset = $script:metadataTrackOffset }
+    )) {
+        $item.element.BeginAnimation([System.Windows.UIElement]::OpacityProperty, $null)
+        $item.offset.BeginAnimation([System.Windows.Media.TranslateTransform]::XProperty, $null)
+        $item.element.Opacity = 1.0
+        $item.offset.X = 0.0
+
+        $move = [System.Windows.Media.Animation.DoubleAnimation]::new(
+            [double]($direction * 10), 0.0,
+            [System.Windows.Media.Animation.Duration]::new($duration)
+        )
+        $move.EasingFunction = $ease
+        $fade = [System.Windows.Media.Animation.DoubleAnimation]::new(
+            0.35, 1.0,
+            [System.Windows.Media.Animation.Duration]::new($duration)
+        )
+        $fade.EasingFunction = $ease
+        $item.offset.BeginAnimation([System.Windows.Media.TranslateTransform]::XProperty, $move)
+        $item.element.BeginAnimation([System.Windows.UIElement]::OpacityProperty, $fade)
+    }
+}
+
 $script:closeDropWindow = $closeDropWindow
 $script:closeTargetShell = $closeDropWindow.FindName("CloseTargetShell")
 $script:closeTargetScale = $closeDropWindow.FindName("CloseTargetScale")
@@ -1790,6 +1833,9 @@ $script:dragging = $false
 $script:lastCoverKey = ""
 $script:lastCoverTrack = ""
 $script:lastTrackIdentity = ""
+$script:trackTransitionReady = $false
+$script:pendingTrackDirection = 0
+$script:pendingTrackDirectionUntil = 0.0
 $script:lastNativeCoverKey = ""
 $script:lastNativeCoverAttemptAt = 0.0
 $script:nativeCoverImage = $null
@@ -2228,6 +2274,10 @@ function Invoke-NativeMediaAction([string]$action) {
 }
 
 function Send-MediaAction([string]$action) {
+    if ($action -eq "prev" -or $action -eq "next") {
+        $script:pendingTrackDirection = if ($action -eq "prev") { -1 } else { 1 }
+        $script:pendingTrackDirectionUntil = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() + 8000
+    }
     if (-not (Invoke-NativeMediaAction $action)) {
         [IslandBridge]::Enqueue($action)
     }
@@ -3816,6 +3866,19 @@ $refresh.Add_Tick({
             $note.Visibility = [System.Windows.Visibility]::Visible
             $script:lastCoverKey = ""
         }
+    }
+    if (-not [string]::IsNullOrWhiteSpace([string]$state["title"]) -and
+        $trackIdentity -ne $script:lastTrackIdentity -and $script:trackTransitionReady) {
+        $direction = 1
+        if ([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() -lt $script:pendingTrackDirectionUntil) {
+            $direction = [int]$script:pendingTrackDirection
+        }
+        Start-TrackTransition $direction
+        $script:pendingTrackDirection = 0
+        $script:pendingTrackDirectionUntil = 0.0
+    }
+    if (-not [string]::IsNullOrWhiteSpace([string]$state["title"])) {
+        $script:trackTransitionReady = $true
     }
     $script:lastTrackIdentity = $trackIdentity
 })
