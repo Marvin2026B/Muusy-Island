@@ -749,8 +749,8 @@ public sealed class IslandAudioMeter : IDisposable
                     peak = 0; available = false; lastError = error.Message;
                     Clear(meters); nextScan = clock.Elapsed.TotalSeconds + 3;
                 }
-                // Audio peaks at ~30 Hz; visual interpolation still uses the monitor cadence.
-                wake.WaitOne(33);
+                // Sample often enough for the compact visualizer to follow short transients.
+                wake.WaitOne(20);
             }
         }
         finally { Clear(meters); wake.Dispose(); }
@@ -808,7 +808,7 @@ public sealed class IslandAnimationDriver : IDisposable
     private readonly MatrixTransform jelly;
     private readonly ScaleTransform[] mini;
     private readonly IslandAudioMeter audio = new IslandAudioMeter();
-    private readonly double[] audioHistory = new double[9];
+    private readonly double[] audioHistory = new double[7];
     private int audioHead;
     private double lastAudioSample;
     private readonly Stopwatch clock = Stopwatch.StartNew();
@@ -1035,18 +1035,19 @@ public sealed class IslandAnimationDriver : IDisposable
     private void UpdateVisuals(double now, double dt)
     {
         bool settling = false;
-        if (now - lastAudioSample >= 1.0 / 30)
+        if (now - lastAudioSample >= 1.0 / 50)
         {
             lastAudioSample = now;
             audioHead = (audioHead + 1) % audioHistory.Length;
-            audioHistory[audioHead] = playing ? Math.Min(1, Math.Sqrt(audio.Peak) * 1.45) : 0;
+            double peak = playing ? Math.Max(0, Math.Min(1, audio.Peak)) : 0;
+            audioHistory[audioHead] = peak < .0005 ? 0 : Math.Min(1, Math.Pow(peak, .35) * 1.65);
         }
         for (int bar = 0; bar < mini.Length; bar++)
         {
-            // A short history of actual music levels, not synthetic frequency bands.
+            // Each bar shows a recent sample of the actual media-session peak.
             double level = playing ? audioHistory[(audioHead - bar + audioHistory.Length) % audioHistory.Length] : 0;
-            double target = .10 + .90 * level;
-            double smoothing = 1 - Math.Exp(-dt * (target > mini[bar].ScaleY ? 32 : 12));
+            double target = playing ? .07 + .93 * level : .07;
+            double smoothing = 1 - Math.Exp(-dt * (target > mini[bar].ScaleY ? 46 : 18));
             double value = mini[bar].ScaleY + (target - mini[bar].ScaleY) * smoothing;
             if (Math.Abs(value - target) < .001) value = target;
             else settling = true;
@@ -1275,11 +1276,11 @@ public sealed class IslandAnimationDriver : IDisposable
     <Border x:Name="Island" Width="352" Height="74"
             HorizontalAlignment="Center" VerticalAlignment="Top" Margin="0,8,0,0"
             CornerRadius="37" BorderThickness="1"
-            BorderBrush="#55FFFFFF"
+            BorderBrush="#32FFFFFF"
             SnapsToDevicePixels="True"
             RenderTransformOrigin="0.5,0.5">
       <Border.Background>
-        <SolidColorBrush x:Name="IslandFill" Color="#C008090D"/>
+        <SolidColorBrush x:Name="IslandFill" Color="#DA08090D"/>
       </Border.Background>
       <Border.RenderTransform>
         <TransformGroup>
@@ -1288,31 +1289,10 @@ public sealed class IslandAnimationDriver : IDisposable
         </TransformGroup>
       </Border.RenderTransform>
       <Border.Effect>
-        <DropShadowEffect Color="#000000" BlurRadius="27" ShadowDepth="7"
-                          Opacity="0.38" RenderingBias="Performance"/>
+        <DropShadowEffect Color="#000000" BlurRadius="19" ShadowDepth="3"
+                          Opacity="0.26" RenderingBias="Performance"/>
       </Border.Effect>
       <Grid ClipToBounds="True">
-        <!-- glass inner top-lit highlight -->
-        <Border x:Name="GlassInnerEdge" CornerRadius="36" BorderThickness="1" Margin="1"
-                IsHitTestVisible="False">
-          <Border.BorderBrush>
-            <LinearGradientBrush StartPoint="0,0" EndPoint="0,1">
-              <GradientStop Color="#42FFFFFF" Offset="0"/>
-              <GradientStop Color="#10FFFFFF" Offset="0.5"/>
-              <GradientStop Color="#08FFFFFF" Offset="1"/>
-            </LinearGradientBrush>
-          </Border.BorderBrush>
-        </Border>
-        <!-- subtle top specular sheen -->
-        <Border x:Name="GlassSheen" CornerRadius="37" IsHitTestVisible="False" Opacity="0.72">
-          <Border.Background>
-            <LinearGradientBrush StartPoint="0,0" EndPoint="0,1">
-              <GradientStop Color="#28FFFFFF" Offset="0"/>
-              <GradientStop Color="#00FFFFFF" Offset="0.28"/>
-            </LinearGradientBrush>
-          </Border.Background>
-        </Border>
-
         <Grid>
           <Grid.RowDefinitions>
             <RowDefinition Height="74"/>
@@ -1355,43 +1335,35 @@ public sealed class IslandAnimationDriver : IDisposable
                          TextTrimming="CharacterEllipsis"/>
             </StackPanel>
 
-            <Grid Grid.Column="3" Width="40" Height="40" IsHitTestVisible="False">
+            <Grid Grid.Column="3" Width="40" Height="34" IsHitTestVisible="False">
               <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" VerticalAlignment="Center">
-                <Rectangle Width="2" Height="17" RadiusX="1" RadiusY="1"
-                           Fill="#70FFFFFF" Margin="0.9,0" RenderTransformOrigin="0.5,0.5">
+                <Rectangle Width="2.6" Height="22" RadiusX="1.3" RadiusY="1.3"
+                           Fill="#80FFFFFF" Margin="1.2,0" RenderTransformOrigin="0.5,0.5">
                   <Rectangle.RenderTransform><ScaleTransform x:Name="MiniVizScale1" ScaleY="0.28"/></Rectangle.RenderTransform>
                 </Rectangle>
-                <Rectangle Width="2" Height="17" RadiusX="1" RadiusY="1"
-                           Fill="#88FFFFFF" Margin="0.9,0" RenderTransformOrigin="0.5,0.5">
+                <Rectangle Width="2.6" Height="22" RadiusX="1.3" RadiusY="1.3"
+                           Fill="#A0FFFFFF" Margin="1.2,0" RenderTransformOrigin="0.5,0.5">
                   <Rectangle.RenderTransform><ScaleTransform x:Name="MiniVizScale2" ScaleY="0.38"/></Rectangle.RenderTransform>
                 </Rectangle>
-                <Rectangle Width="2" Height="17" RadiusX="1" RadiusY="1"
-                           Fill="#A4FFFFFF" Margin="0.9,0" RenderTransformOrigin="0.5,0.5">
+                <Rectangle Width="2.6" Height="22" RadiusX="1.3" RadiusY="1.3"
+                           Fill="#C8FFFFFF" Margin="1.2,0" RenderTransformOrigin="0.5,0.5">
                   <Rectangle.RenderTransform><ScaleTransform x:Name="MiniVizScale3" ScaleY="0.52"/></Rectangle.RenderTransform>
                 </Rectangle>
-                <Rectangle Width="2" Height="17" RadiusX="1" RadiusY="1"
-                           Fill="#D0FFFFFF" Margin="0.9,0" RenderTransformOrigin="0.5,0.5">
+                <Rectangle Width="2.6" Height="22" RadiusX="1.3" RadiusY="1.3"
+                           Fill="#F0FFFFFF" Margin="1.2,0" RenderTransformOrigin="0.5,0.5">
                   <Rectangle.RenderTransform><ScaleTransform x:Name="MiniVizScale4" ScaleY="0.68"/></Rectangle.RenderTransform>
                 </Rectangle>
-                <Rectangle Width="2" Height="17" RadiusX="1" RadiusY="1"
-                           Fill="#F2FFFFFF" Margin="0.9,0" RenderTransformOrigin="0.5,0.5">
+                <Rectangle Width="2.6" Height="22" RadiusX="1.3" RadiusY="1.3"
+                           Fill="#C8FFFFFF" Margin="1.2,0" RenderTransformOrigin="0.5,0.5">
                   <Rectangle.RenderTransform><ScaleTransform x:Name="MiniVizScale5" ScaleY="0.44"/></Rectangle.RenderTransform>
                 </Rectangle>
-                <Rectangle Width="2" Height="17" RadiusX="1" RadiusY="1"
-                           Fill="#D0FFFFFF" Margin="0.9,0" RenderTransformOrigin="0.5,0.5">
+                <Rectangle Width="2.6" Height="22" RadiusX="1.3" RadiusY="1.3"
+                           Fill="#A0FFFFFF" Margin="1.2,0" RenderTransformOrigin="0.5,0.5">
                   <Rectangle.RenderTransform><ScaleTransform x:Name="MiniVizScale6" ScaleY="0.62"/></Rectangle.RenderTransform>
                 </Rectangle>
-                <Rectangle Width="2" Height="17" RadiusX="1" RadiusY="1"
-                           Fill="#A4FFFFFF" Margin="0.9,0" RenderTransformOrigin="0.5,0.5">
+                <Rectangle Width="2.6" Height="22" RadiusX="1.3" RadiusY="1.3"
+                           Fill="#80FFFFFF" Margin="1.2,0" RenderTransformOrigin="0.5,0.5">
                   <Rectangle.RenderTransform><ScaleTransform x:Name="MiniVizScale7" ScaleY="0.48"/></Rectangle.RenderTransform>
-                </Rectangle>
-                <Rectangle Width="2" Height="17" RadiusX="1" RadiusY="1"
-                           Fill="#88FFFFFF" Margin="0.9,0" RenderTransformOrigin="0.5,0.5">
-                  <Rectangle.RenderTransform><ScaleTransform x:Name="MiniVizScale8" ScaleY="0.34"/></Rectangle.RenderTransform>
-                </Rectangle>
-                <Rectangle Width="2" Height="17" RadiusX="1" RadiusY="1"
-                           Fill="#70FFFFFF" Margin="0.9,0" RenderTransformOrigin="0.5,0.5">
-                  <Rectangle.RenderTransform><ScaleTransform x:Name="MiniVizScale9" ScaleY="0.24"/></Rectangle.RenderTransform>
                 </Rectangle>
               </StackPanel>
             </Grid>
@@ -1715,8 +1687,6 @@ $script:likePulseOuter  = $window.FindName("LikePulseOuter")
 $script:likePulseOuterScale = $window.FindName("LikePulseOuterScale")
 $script:likePulseInner  = $window.FindName("LikePulseInner")
 $script:likePulseInnerScale = $window.FindName("LikePulseInnerScale")
-$script:glassInnerEdge  = $window.FindName("GlassInnerEdge")
-$script:glassSheen      = $window.FindName("GlassSheen")
 $script:dislikeIcon     = $window.FindName("DislikeIcon")
 $script:queueEmpty      = $window.FindName("QueueEmpty")
 $script:queueButtons = @($window.FindName("QueueSong1"), $window.FindName("QueueSong2"), $window.FindName("QueueSong3"))
@@ -1755,9 +1725,7 @@ $script:miniVizScales   = @(
     $window.FindName("MiniVizScale4"),
     $window.FindName("MiniVizScale5"),
     $window.FindName("MiniVizScale6"),
-    $window.FindName("MiniVizScale7"),
-    $window.FindName("MiniVizScale8"),
-    $window.FindName("MiniVizScale9")
+    $window.FindName("MiniVizScale7")
 )
 $script:closeDropWindow = $closeDropWindow
 $script:closeTargetShell = $closeDropWindow.FindName("CloseTargetShell")
@@ -3390,8 +3358,6 @@ $renderHandler = [System.EventHandler]{
 
         $radius = $a.r0 + ($a.r1 - $a.r0) * $eMorph
         $script:island.CornerRadius = [System.Windows.CornerRadius]::new($radius)
-        $script:glassInnerEdge.CornerRadius = [System.Windows.CornerRadius]::new([Math]::Max(0.0, $radius - 1.0))
-        $script:glassSheen.CornerRadius = [System.Windows.CornerRadius]::new($radius)
         $settlePulse = [Math]::Sin([Math]::PI * $t) * (1.0 - $t)
         if ($a.open) {
             $script:islandScale.ScaleX = $a.sx0 + ((1.0 - $a.sx0) * $eMorph) + (0.12 * $settlePulse)
@@ -3419,8 +3385,6 @@ $renderHandler = [System.EventHandler]{
             $script:island.Width = $a.w1
             $script:island.Height = $a.h1
             $script:island.CornerRadius = [System.Windows.CornerRadius]::new($a.r1)
-            $script:glassInnerEdge.CornerRadius = [System.Windows.CornerRadius]::new([Math]::Max(0.0, $a.r1 - 1.0))
-            $script:glassSheen.CornerRadius = [System.Windows.CornerRadius]::new($a.r1)
             $script:chevronRotate.Angle = $a.c1
             $script:islandScale.ScaleX = 1.0
             $script:islandScale.ScaleY = 1.0
