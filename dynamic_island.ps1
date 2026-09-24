@@ -1336,7 +1336,10 @@ public sealed class IslandAnimationDriver : IDisposable
                     BorderBrush="#1EFFFFFF" BorderThickness="1"
                     RenderTransformOrigin="0.5,0.5">
               <Border.RenderTransform>
-                <TranslateTransform x:Name="CoverTrackOffset"/>
+                <TransformGroup>
+                  <ScaleTransform x:Name="CoverTrackScale" ScaleX="1" ScaleY="1"/>
+                  <TranslateTransform x:Name="CoverTrackOffset"/>
+                </TransformGroup>
               </Border.RenderTransform>
               <Grid>
                 <TextBlock x:Name="Note" Text="&#9835;"
@@ -1713,6 +1716,7 @@ $script:likeIconScale   = $window.FindName("LikeIconScale")
 $script:likeSpark       = $window.FindName("LikeSpark")
 $script:likeSparkScale  = $window.FindName("LikeSparkScale")
 $script:coverBorder     = $window.FindName("CoverBorder")
+$script:coverTrackScale = $window.FindName("CoverTrackScale")
 $script:coverTrackOffset = $window.FindName("CoverTrackOffset")
 $script:trackMetadata   = $window.FindName("TrackMetadata")
 $script:metadataTrackOffset = $window.FindName("MetadataTrackOffset")
@@ -1763,13 +1767,13 @@ $script:miniVizScales   = @(
 
 function Start-TrackTransition([int]$direction) {
     if ($direction -ne -1) { $direction = 1 }
-    $duration = [TimeSpan]::FromMilliseconds(190)
+    $duration = [TimeSpan]::FromMilliseconds(320)
     $ease = [System.Windows.Media.Animation.CubicEase]::new()
     $ease.EasingMode = [System.Windows.Media.Animation.EasingMode]::EaseOut
 
     foreach ($item in @(
-        @{ element = $script:coverBorder; offset = $script:coverTrackOffset },
-        @{ element = $script:trackMetadata; offset = $script:metadataTrackOffset }
+        @{ element = $script:coverBorder; offset = $script:coverTrackOffset; scale = $script:coverTrackScale; delay = 0 },
+        @{ element = $script:trackMetadata; offset = $script:metadataTrackOffset; scale = $null; delay = 45 }
     )) {
         $item.element.BeginAnimation([System.Windows.UIElement]::OpacityProperty, $null)
         $item.offset.BeginAnimation([System.Windows.Media.TranslateTransform]::XProperty, $null)
@@ -1777,17 +1781,33 @@ function Start-TrackTransition([int]$direction) {
         $item.offset.X = 0.0
 
         $move = [System.Windows.Media.Animation.DoubleAnimation]::new(
-            [double]($direction * 10), 0.0,
+            [double]($direction * 28), 0.0,
             [System.Windows.Media.Animation.Duration]::new($duration)
         )
         $move.EasingFunction = $ease
+        $move.BeginTime = [TimeSpan]::FromMilliseconds([double]$item.delay)
         $fade = [System.Windows.Media.Animation.DoubleAnimation]::new(
-            0.35, 1.0,
+            0.05, 1.0,
             [System.Windows.Media.Animation.Duration]::new($duration)
         )
         $fade.EasingFunction = $ease
+        $fade.BeginTime = [TimeSpan]::FromMilliseconds([double]$item.delay)
         $item.offset.BeginAnimation([System.Windows.Media.TranslateTransform]::XProperty, $move)
         $item.element.BeginAnimation([System.Windows.UIElement]::OpacityProperty, $fade)
+
+        if ($null -ne $item.scale) {
+            $item.scale.BeginAnimation([System.Windows.Media.ScaleTransform]::ScaleXProperty, $null)
+            $item.scale.BeginAnimation([System.Windows.Media.ScaleTransform]::ScaleYProperty, $null)
+            $item.scale.ScaleX = 1.0
+            $item.scale.ScaleY = 1.0
+            $zoom = [System.Windows.Media.Animation.DoubleAnimation]::new(
+                0.90, 1.0,
+                [System.Windows.Media.Animation.Duration]::new($duration)
+            )
+            $zoom.EasingFunction = $ease
+            $item.scale.BeginAnimation([System.Windows.Media.ScaleTransform]::ScaleXProperty, $zoom)
+            $item.scale.BeginAnimation([System.Windows.Media.ScaleTransform]::ScaleYProperty, $zoom)
+        }
     }
 }
 

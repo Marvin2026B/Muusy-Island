@@ -12,7 +12,7 @@ All notable changes to Muusy Island are documented here.
 ### Changed
 
 - Simplified the Island's compact surface and made its audio visualizer respond more clearly to media-session peaks.
-- Added a short directional transition for next and previous tracks.
+- Added a visible directional cover and title transition for next and previous tracks.
 
 ## [1.5.0] - 2026-07-29
 
