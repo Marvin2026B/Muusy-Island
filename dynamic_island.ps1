@@ -1040,13 +1040,34 @@ public sealed class IslandAnimationDriver : IDisposable
             lastAudioSample = now;
             audioHead = (audioHead + 1) % audioHistory.Length;
             double peak = playing ? Math.Max(0, Math.Min(1, audio.Peak)) : 0;
-            audioHistory[audioHead] = peak < .0005 ? 0 : Math.Min(1, Math.Pow(peak, .35) * 1.65);
+            audioHistory[audioHead] = peak < .0005 ? 0 : peak;
         }
+
+        double minPeak = Double.MaxValue, maxPeak = 0;
+        for (int i = 0; i < audioHistory.Length; i++)
+        {
+            double sample = audioHistory[i];
+            if (sample <= .0005) continue;
+            minPeak = Math.Min(minPeak, sample);
+            maxPeak = Math.Max(maxPeak, sample);
+        }
+        double peakRange = maxPeak - (minPeak == Double.MaxValue ? 0 : minPeak);
+        double rangeFloor = Math.Max(.01, maxPeak * .035);
+
         for (int bar = 0; bar < mini.Length; bar++)
         {
             // Each bar shows a recent sample of the actual media-session peak.
-            double level = playing ? audioHistory[(audioHead - bar + audioHistory.Length) % audioHistory.Length] : 0;
-            double target = playing ? .07 + .93 * level : .07;
+            double sample = playing ? audioHistory[(audioHead - bar + audioHistory.Length) % audioHistory.Length] : 0;
+            double level = 0;
+            if (sample > .0005)
+            {
+                level = peakRange > rangeFloor
+                    ? Math.Max(0, Math.Min(1, (sample - minPeak) / peakRange))
+                    : Math.Sqrt(sample);
+            }
+            double pulse = .5 + .5 * Math.Sin(now * 8.5 - bar * 1.15);
+            double pulseStrength = maxPeak > .0005 ? .16 + .10 * Math.Sqrt(maxPeak) : .10;
+            double target = playing ? Math.Min(.96, .08 + .43 * level + pulseStrength * pulse) : .07;
             double smoothing = 1 - Math.Exp(-dt * (target > mini[bar].ScaleY ? 46 : 18));
             double value = mini[bar].ScaleY + (target - mini[bar].ScaleY) * smoothing;
             if (Math.Abs(value - target) < .001) value = target;
