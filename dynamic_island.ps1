@@ -1856,6 +1856,7 @@ $script:lastTrackIdentity = ""
 $script:trackTransitionReady = $false
 $script:pendingTrackDirection = 0
 $script:pendingTrackDirectionUntil = 0.0
+$script:pendingTrackActionAnimation = $false
 $script:lastNativeCoverKey = ""
 $script:lastNativeCoverAttemptAt = 0.0
 $script:nativeCoverImage = $null
@@ -2297,6 +2298,7 @@ function Send-MediaAction([string]$action) {
     if ($action -eq "prev" -or $action -eq "next") {
         $script:pendingTrackDirection = if ($action -eq "prev") { -1 } else { 1 }
         $script:pendingTrackDirectionUntil = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() + 8000
+        $script:pendingTrackActionAnimation = $true
     }
     if (-not (Invoke-NativeMediaAction $action)) {
         [IslandBridge]::Enqueue($action)
@@ -3887,15 +3889,21 @@ $refresh.Add_Tick({
             $script:lastCoverKey = ""
         }
     }
+    $trackChanged = $trackIdentity -ne $script:lastTrackIdentity
+    $hasPendingTrackDirection = ($script:pendingTrackDirection -ne 0 -and
+        [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() -lt $script:pendingTrackDirectionUntil)
     if (-not [string]::IsNullOrWhiteSpace([string]$state["title"]) -and
-        $trackIdentity -ne $script:lastTrackIdentity -and $script:trackTransitionReady) {
+        $script:trackTransitionReady -and ($trackChanged -or $script:pendingTrackActionAnimation)) {
         $direction = 1
-        if ([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() -lt $script:pendingTrackDirectionUntil) {
+        if ($hasPendingTrackDirection) {
             $direction = [int]$script:pendingTrackDirection
         }
         Start-TrackTransition $direction
-        $script:pendingTrackDirection = 0
-        $script:pendingTrackDirectionUntil = 0.0
+        $script:pendingTrackActionAnimation = $false
+        if ($trackChanged -or -not $hasPendingTrackDirection) {
+            $script:pendingTrackDirection = 0
+            $script:pendingTrackDirectionUntil = 0.0
+        }
     }
     if (-not [string]::IsNullOrWhiteSpace([string]$state["title"])) {
         $script:trackTransitionReady = $true
