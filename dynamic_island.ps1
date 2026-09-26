@@ -112,7 +112,7 @@ public static class IslandBridge
         command["id"] = Interlocked.Increment(ref nextId);
         command["action"] = "queue";
         command["queueToken"] = token;
-        command["expiresAt"] = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() + 5000;
+        command["expiresAt"] = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() + 20000;
         Commands.Enqueue(command);
         Dictionary<string, object> ignored;
         while (Commands.Count > 20) Commands.TryDequeue(out ignored);
@@ -3711,8 +3711,9 @@ foreach ($queueButton in $script:queueButtons) {
     $queueButton.Add_Click({
         param($sender, $eventArgs)
         if ($sender.IsEnabled -and $sender.Tag) {
-            [void][IslandBridge]::EnqueueQueue([string]$sender.Tag)
-            $eventArgs.Handled = $true
+            if ([IslandBridge]::EnqueueQueue([string]$sender.Tag)) {
+                $eventArgs.Handled = $true
+            }
         }
     })
 }
@@ -3765,6 +3766,30 @@ $refresh.Add_Tick({
             $nativeState["sourceName"] = "YouTube Music"
             if ($null -eq $nativeState["coverImage"] -and $bridgeCover -and $bridgeAge -lt 5000) {
                 $nativeState["cover"] = $bridgeCover
+            }
+            # Use the browser video position for YouTube Music. Windows can report
+            # a stale media-session position when the Island starts mid-song.
+            $bridgeAt = [double]$bridgeState["at"]
+            $bridgeCurrent = [double]$bridgeState["current"]
+            $bridgeDuration = [double]$bridgeState["duration"]
+            $bridgeClockFresh = (
+                $bridgeAge -ge 0 -and $bridgeAge -lt 7000 -and
+                $bridgeAt -gt 0 -and
+                -not [double]::IsNaN($bridgeCurrent) -and
+                -not [double]::IsInfinity($bridgeCurrent) -and
+                $bridgeCurrent -ge 0
+            )
+            if ($bridgeClockFresh) {
+                if ($bridgeDuration -gt 0 -and
+                    -not [double]::IsNaN($bridgeDuration) -and
+                    -not [double]::IsInfinity($bridgeDuration)) {
+                    $nativeState["duration"] = $bridgeDuration
+                    $nativeState["current"] = [Math]::Min($bridgeDuration, $bridgeCurrent)
+                } else {
+                    $nativeState["current"] = $bridgeCurrent
+                }
+                $nativeState["playing"] = [Convert]::ToBoolean($bridgeState["playing"])
+                $nativeState["at"] = $bridgeAt
             }
             $nativeState["queue"] = $bridgeState["queue"]
             $nativeState["queueSelection"] = $bridgeState["queueSelection"]

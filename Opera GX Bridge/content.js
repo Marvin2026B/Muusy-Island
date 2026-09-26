@@ -23,6 +23,10 @@
     if (!root) return null;
     const direct = root.querySelector?.(selector);
     if (direct) return direct;
+    if (root.shadowRoot) {
+      const inRootShadow = queryDeep(selector, root.shadowRoot);
+      if (inRootShadow) return inRootShadow;
+    }
     const nodes = root.querySelectorAll?.("*") || [];
     for (const node of nodes) {
       if (!node.shadowRoot) continue;
@@ -34,6 +38,7 @@
   function allDeep(selector, root) {
     if (!root) return [];
     const found = [...(root.querySelectorAll?.(selector) || [])];
+    if (root.shadowRoot) found.push(...allDeep(selector, root.shadowRoot));
     for (const node of root.querySelectorAll?.("*") || []) {
       if (node.shadowRoot) found.push(...allDeep(selector, node.shadowRoot));
     }
@@ -218,6 +223,21 @@
     return getQueueEntries().map(({ row, ...item }) => item);
   }
 
+  function activateQueueItem(row) {
+    if (!row?.isConnected) return false;
+    const playButton = queryDeep("#play-button", row) ||
+      allDeep("button, tp-yt-paper-icon-button", row).find(button => {
+        const label = `${button.getAttribute("aria-label") || ""} ${button.title || ""}`.toLowerCase();
+        return /play|abspielen|wiedergeben/.test(label) &&
+          !button.disabled && button.getAttribute("aria-disabled") !== "true";
+      });
+    const titleControl = queryDeep("#video-title", row) || queryDeep(".song-title", row);
+    const control = playButton || titleControl || row;
+    if (control.disabled || control.getAttribute?.("aria-disabled") === "true") return false;
+    control.click();
+    return true;
+  }
+
   async function executeCommand(command) {
     const action = command.action;
     if (action === "queue") {
@@ -225,9 +245,7 @@
           !Number.isFinite(command.expiresAt) || command.expiresAt <= Date.now()) return false;
       const item = getQueueEntries().find(entry => entry.queueToken === command.queueToken);
       if (!item || !item.row.isConnected) return false;
-      const control = query(".song-title, #video-title", item.row) || item.row;
-      control.click();
-      return true;
+      return activateQueueItem(item.row);
     }
     if (!["play", "prev", "next", "like", "dislike"].includes(action)) return false;
     for (let attempt = 0; attempt < 8; attempt++) {
