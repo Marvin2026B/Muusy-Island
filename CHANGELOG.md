@@ -12,6 +12,7 @@ All notable changes to Muusy Island are documented here.
 ### Changed
 
 - Use YouTube Music's fresh browser video position for accurate elapsed time when the Island starts during a song.
+- Keep queue tokens stable when YouTube Music replaces queue rows, retry brief DOM updates, and expose the bridge build so stale extensions cannot silently accept clicks.
 - Make queue selection target the row's play control, including controls inside open shadow roots, and allow commands more time to reach the browser.
 - Simplified the Island's compact surface and made its audio visualizer respond more clearly to media-session peaks.
 - Added a visible directional cover and title transition for next and previous tracks.

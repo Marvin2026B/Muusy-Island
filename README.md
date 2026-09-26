@@ -60,7 +60,7 @@ The bridge is only required for YouTube Music. Spotify and VLC use Windows media
 3. Select **Load unpacked**.
 4. Choose the `Opera GX Bridge` folder from the extracted release.
 
-Open YouTube Music after loading the bridge. The bridge reconnects to existing YouTube Music tabs automatically after startup or an extension reload; a manual tab refresh is only needed if the browser blocks the first injection.
+Open YouTube Music after loading the bridge. After updating an unpacked bridge, reload it on the browser's extensions page and refresh any existing YouTube Music tab once so the new content script replaces the old one. The bridge reconnects to existing tabs automatically after startup or an extension reload.
 
 ## Discord Rich Presence
 

@@ -4,9 +4,10 @@
   if (window.__MUUSY_ISLAND_BRIDGE_LOADED__) return;
   window.__MUUSY_ISLAND_BRIDGE_LOADED__ = true;
 
+  const BRIDGE_BUILD = "1.5.1";
   let lastCommand = 0;
   const queuePage = [...crypto.getRandomValues(new Uint8Array(8))].map(value => value.toString(16).padStart(2, "0")).join("");
-  const queueTokens = new WeakMap();
+  const queueTokens = new Map();
   let queueSequence = 0;
   let lastStateJson = "";
   let lastPublishAt = 0;
@@ -185,6 +186,18 @@
       : null;
   }
 
+  function getQueueVideoId(row) {
+    const directId = row.getAttribute("video-id") || queryDeep("[video-id]", row)?.getAttribute("video-id");
+    if (directId) return directId;
+    const link = queryDeep('a[href*="watch?v="]', row);
+    if (!link) return "";
+    try {
+      return new URL(link.href, location.href).searchParams.get("v") || "";
+    } catch (_) {
+      return "";
+    }
+  }
+
   function getQueueEntries() {
     const selector = [
       "ytmusic-player-queue ytmusic-player-queue-item",
@@ -198,16 +211,27 @@
       seen.add(row);
       return true;
     });
+    const occurrences = new Map();
     const parsed = rows.map(row => {
       const item = parseQueueRow(row);
       if (!item) return null;
-      const identity = `${item.title}\n${item.artist}`;
-      let entry = queueTokens.get(row);
-      if (!entry || entry.identity !== identity) {
-        entry = { identity, token: `${queuePage}:${++queueSequence}` };
-        queueTokens.set(row, entry);
+      const videoId = getQueueVideoId(row);
+      const baseIdentity = videoId
+        ? `video:${videoId}`
+        : `${normalize(item.title)}\n${normalize(item.artist)}`;
+      const occurrence = occurrences.get(baseIdentity) || 0;
+      occurrences.set(baseIdentity, occurrence + 1);
+      const identity = `${baseIdentity}\n${occurrence}`;
+      let token = queueTokens.get(identity);
+      if (!token) {
+        token = `${queuePage}:${++queueSequence}`;
+        queueTokens.set(identity, token);
+        if (queueTokens.size > 4096) {
+          const oldest = queueTokens.keys().next();
+          if (!oldest.done) queueTokens.delete(oldest.value);
+        }
       }
-      return { ...item, queueToken: entry.token, row };
+      return { ...item, queueToken: token, row };
     }).filter(Boolean);
     if (!parsed.length) return [];
     const currentTitle = normalize(getTrack().title);
@@ -243,9 +267,13 @@
     if (action === "queue") {
       if (!/^[a-f0-9]{16}:[1-9][0-9]{0,8}$/.test(command.queueToken || "") ||
           !Number.isFinite(command.expiresAt) || command.expiresAt <= Date.now()) return false;
-      const item = getQueueEntries().find(entry => entry.queueToken === command.queueToken);
-      if (!item || !item.row.isConnected) return false;
-      return activateQueueItem(item.row);
+      if (!command.queueToken.startsWith(`${queuePage}:`)) return false;
+      for (let attempt = 0; attempt < 8; attempt++) {
+        const item = getQueueEntries().find(entry => entry.queueToken === command.queueToken);
+        if (item?.row.isConnected) return activateQueueItem(item.row);
+        if (attempt < 7) await new Promise(resolve => window.setTimeout(resolve, 100));
+      }
+      return false;
     }
     if (!["play", "prev", "next", "like", "dislike"].includes(action)) return false;
     for (let attempt = 0; attempt < 8; attempt++) {
@@ -291,6 +319,7 @@
       liked: getRating(),
       sourceName: "YouTube Music",
       sourceKey: "youtube",
+      bridgeBuild: BRIDGE_BUILD,
       url: location.href,
       at: now
     };

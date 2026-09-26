@@ -67,6 +67,7 @@ public static class IslandBridge
         state["duration"] = 0.0;
         state["queue"] = new object[0];
         state["queueSelection"] = false;
+        state["bridgeBuild"] = "";
         state["liked"] = 0;
         state["sourceName"] = "YouTube Music";
         state["sourceKey"] = "youtube";
@@ -3793,6 +3794,7 @@ $refresh.Add_Tick({
             }
             $nativeState["queue"] = $bridgeState["queue"]
             $nativeState["queueSelection"] = $bridgeState["queueSelection"]
+            $nativeState["bridgeBuild"] = $bridgeState["bridgeBuild"]
             $nativeState["liked"] = $bridgeState["liked"]
         }
         $state = $nativeState
@@ -3874,13 +3876,21 @@ $refresh.Add_Tick({
             $script:queueTitles[$queueIndex].Text = [string]$queueItem["title"]
             $script:queueArtists[$queueIndex].Text = [string]$queueItem["artist"]
             $queueToken = [string]$queueItem["queueToken"]
+            $bridgeBuild = [string]$state["bridgeBuild"]
             $canSelectSong = ($browserFeaturesLive -and [Convert]::ToBoolean($state["queueSelection"]) -and
+                $bridgeBuild -eq "1.5.1" -and
                 $queueToken -cmatch '^[a-f0-9]{16}:[1-9][0-9]{0,8}$')
             # Hover belongs to the visible song; only playback needs a current bridge token.
             $songButton.IsEnabled = -not [string]::IsNullOrWhiteSpace([string]$queueItem["title"])
             $songButton.Tag = if ($canSelectSong) { $queueToken } else { $null }
             $songButton.Cursor = if ($canSelectSong) { [System.Windows.Input.Cursors]::Hand } else { [System.Windows.Input.Cursors]::Arrow }
-            $songButton.ToolTip = if ($canSelectSong) { "Song abspielen" } else { "YouTube Music und die Bridge-Erweiterung neu laden" }
+            $songButton.ToolTip = if ($canSelectSong) {
+                "Song abspielen"
+            } elseif (-not $browserFeaturesLive -or $bridgeBuild -ne "1.5.1") {
+                "Muusy-Bridge neu laden und YouTube-Music-Tab aktualisieren"
+            } else {
+                "Songauswahl gerade nicht verfügbar"
+            }
         } else {
             $songButton.Tag = $null
             $songButton.IsEnabled = $false
