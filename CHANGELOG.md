@@ -11,6 +11,7 @@ All notable changes to Muusy Island are documented here.
 
 ### Changed
 
+- Fix the invalid WPF animation duration type that caused the Island to close when a track transition animation ran.
 - Use YouTube Music's fresh browser video position for accurate elapsed time when the Island starts during a song.
 - Keep queue tokens stable when YouTube Music replaces queue rows, retry brief DOM updates, and expose the bridge build so stale extensions cannot silently accept clicks.
 - Make queue selection target the row's play control, including controls inside open shadow roots, and allow commands more time to reach the browser.

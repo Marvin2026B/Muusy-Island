@@ -1805,13 +1805,13 @@ function Start-TrackTransition([int]$direction) {
 
         $move = [System.Windows.Media.Animation.DoubleAnimation]::new(
             [double]($direction * 28), 0.0,
-            [System.Windows.Media.Animation.Duration]::new($duration)
+            [System.Windows.Duration]::new($duration)
         )
         $move.EasingFunction = $ease
         $move.BeginTime = [TimeSpan]::FromMilliseconds([double]$item.delay)
         $fade = [System.Windows.Media.Animation.DoubleAnimation]::new(
             0.05, 1.0,
-            [System.Windows.Media.Animation.Duration]::new($duration)
+            [System.Windows.Duration]::new($duration)
         )
         $fade.EasingFunction = $ease
         $fade.BeginTime = [TimeSpan]::FromMilliseconds([double]$item.delay)
@@ -1825,7 +1825,7 @@ function Start-TrackTransition([int]$direction) {
             $item.scale.ScaleY = 1.0
             $zoom = [System.Windows.Media.Animation.DoubleAnimation]::new(
                 0.90, 1.0,
-                [System.Windows.Media.Animation.Duration]::new($duration)
+                [System.Windows.Duration]::new($duration)
             )
             $zoom.EasingFunction = $ease
             $item.scale.BeginAnimation([System.Windows.Media.ScaleTransform]::ScaleXProperty, $zoom)
