@@ -15,6 +15,7 @@ All notable changes to Muusy Island are documented here.
 - Added a visible directional cover and title transition for next and previous tracks.
 - Reasserted the Island's topmost position without stealing focus.
 - Added single-instance startup protection for manual and login launches.
+- Added a square Muusy Island logo mark for Windows shortcuts.
 
 ## [1.5.0] - 2026-07-29
 
