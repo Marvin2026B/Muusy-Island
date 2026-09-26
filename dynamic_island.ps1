@@ -853,6 +853,16 @@ public sealed class IslandAnimationDriver : IDisposable
 
     public void SetAudioSource(string source) { audio.SetSource(source); }
 
+    public void EnsureTopmost()
+    {
+        if (disposed || !window.IsVisible || window.WindowState == WindowState.Minimized) return;
+        IntPtr handle = new WindowInteropHelper(window).Handle;
+        if (handle == IntPtr.Zero) return;
+        if (!window.Topmost) window.Topmost = true;
+        // Reassert z-order without moving, resizing, or activating the Island.
+        SetWindowPos(handle, new IntPtr(-1), 0, 0, 0, 0, 0x0213);
+    }
+
     private void UpdateSubscription()
     {
         audio.SetEnabled(!disposed && playing && window.IsVisible && window.WindowState != WindowState.Minimized);
@@ -3543,6 +3553,7 @@ $script:animationDriver.add_DragMoved([System.EventHandler]{ Update-CloseDropTar
 $window.Add_SourceInitialized({
     $helper = New-Object System.Windows.Interop.WindowInteropHelper($window)
     $script:hwndSource = [System.Windows.Interop.HwndSource]::FromHwnd($helper.Handle)
+    $script:animationDriver.EnsureTopmost()
     $script:hitTestHook = [System.Windows.Interop.HwndSourceHook]{
         param($hwnd, $message, $wParam, $lParam, [ref]$handled)
 
@@ -3709,6 +3720,9 @@ $settingsButton.Add_Click({ Show-IslandSettings })
 $refresh = New-Object System.Windows.Threading.DispatcherTimer
 $refresh.Interval = [TimeSpan]::FromMilliseconds(700)
 $refresh.Add_Tick({
+    if (-not $script:dragging -and -not $script:settingsOpen) {
+        $script:animationDriver.EnsureTopmost()
+    }
     if ($script:animating -or $script:dragging -or $script:animationDriver.IsJellyActive) { return }
 
     $bridgeState = [IslandBridge]::Snapshot()
