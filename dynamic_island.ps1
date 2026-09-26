@@ -3,6 +3,18 @@ param(
     [switch]$StartSettings
 )
 
+$script:instanceMutex = [System.Threading.Mutex]::new($false, 'Local\MuusyIsland')
+$script:ownsInstanceMutex = $false
+try {
+    $script:ownsInstanceMutex = $script:instanceMutex.WaitOne(0)
+} catch [System.Threading.AbandonedMutexException] {
+    $script:ownsInstanceMutex = $true
+}
+if (-not $script:ownsInstanceMutex) {
+    $script:instanceMutex.Dispose()
+    return
+}
+
 Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase
 Add-Type -AssemblyName System.Web.Extensions
 Add-Type -AssemblyName System.Runtime.WindowsRuntime
@@ -3949,4 +3961,12 @@ $window.Add_ContentRendered({
     }
 })
 
-$window.ShowDialog() | Out-Null
+try {
+    $window.ShowDialog() | Out-Null
+}
+finally {
+    if ($script:ownsInstanceMutex) {
+        try { $script:instanceMutex.ReleaseMutex() } catch {}
+    }
+    $script:instanceMutex.Dispose()
+}

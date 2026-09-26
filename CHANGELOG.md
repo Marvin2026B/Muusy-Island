@@ -14,6 +14,7 @@ All notable changes to Muusy Island are documented here.
 - Simplified the Island's compact surface and made its audio visualizer respond more clearly to media-session peaks.
 - Added a visible directional cover and title transition for next and previous tracks.
 - Reasserted the Island's topmost position without stealing focus.
+- Added single-instance startup protection for manual and login launches.
 
 ## [1.5.0] - 2026-07-29
 
